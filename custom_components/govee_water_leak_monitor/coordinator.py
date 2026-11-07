@@ -156,9 +156,10 @@ class WaterLeakCoordinator:
             return
         data["last_wet"] = dt_util.utcnow().isoformat()
         data["entity_id"] = item[CONF_ENTITY_ID]
+        # Publish entity state before notification services can delay it.
+        self._signal_update(sensor_id)
         await self._async_show_alert(item)
         await self._async_save()
-        self._signal_update(sensor_id)
 
     @callback
     def _async_state_changed(self, event) -> None:
@@ -182,9 +183,9 @@ class WaterLeakCoordinator:
         """Restore a sensor that first becomes available already wet."""
         data = self.sensor_state(item["id"])
         data["active"] = True
+        self._signal_update(item["id"])
         await self._async_show_alert(item, startup=True)
         await self._async_save()
-        self._signal_update(item["id"])
 
     async def _async_leak_started(self, item: dict[str, Any]) -> None:
         data = self.sensor_state(item["id"])
@@ -197,10 +198,11 @@ class WaterLeakCoordinator:
             "last_wet": dt_util.utcnow().isoformat(),
             "last_alert": dt_util.utcnow().isoformat(),
         })
+        # Publish the new state before calling external notification services.
+        self._signal_update(item["id"])
         await self._async_send_email(item, recovery=False)
         await self._async_show_alert(item)
         await self._async_save()
-        self._signal_update(item["id"])
 
     async def _async_leak_cleared(self, item: dict[str, Any]) -> None:
         data = self.sensor_state(item["id"])
@@ -208,10 +210,10 @@ class WaterLeakCoordinator:
             return
         data["active"] = False
         data["acknowledged"] = False
+        self._signal_update(item["id"])
         await self._async_clear_notifications(item)
         await self._async_send_email(item, recovery=True)
         await self._async_save()
-        self._signal_update(item["id"])
 
     async def async_acknowledge(self, sensor_id: str) -> None:
         """Acknowledge the current episode and stop email reminders."""
@@ -219,10 +221,11 @@ class WaterLeakCoordinator:
         if item is None:
             return
         data = self.sensor_state(sensor_id)
-        if data.get("active"):
+        if data.get("active") and not data.get("acknowledged"):
             data["acknowledged"] = True
-            await self._async_save()
+            # Reflect the acknowledgement immediately; persistence is secondary.
             self._signal_update(sensor_id)
+            await self._async_save()
 
     async def async_reset_acknowledgment(self, sensor_id: str) -> None:
         """Re-enable reminders for an active episode."""
@@ -230,10 +233,10 @@ class WaterLeakCoordinator:
         if item is None:
             return
         data = self.sensor_state(sensor_id)
-        if data.get("active"):
+        if data.get("active") and data.get("acknowledged"):
             data["acknowledged"] = False
-            await self._async_save()
             self._signal_update(sensor_id)
+            await self._async_save()
 
     async def async_test_notifications(self, sensor_id: str) -> None:
         """Send a test notification without changing leak state."""
