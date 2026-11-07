@@ -39,4 +39,8 @@ class WaterLeakEntity(Entity):
         ))
 
     def _handle_update(self) -> None:
-        self.async_write_ha_state()
+        """Refresh entity state safely, even if a signal arrives off-loop."""
+        # Dispatcher callbacks can be invoked from a worker thread when an
+        # integration callback crosses thread boundaries. add_job is the
+        # thread-safe Home Assistant API for scheduling work on the event loop.
+        self.coordinator.hass.add_job(self.async_write_ha_state)
