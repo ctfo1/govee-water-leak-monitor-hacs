@@ -1,0 +1,79 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Water Leak Alerts",
+        "description": "Create an empty Water Leak Alerts integration. Add water sensors after setup."
+      }
+    },
+    "abort": {
+      "already_configured": {
+        "title": "Already configured",
+        "description": "Only one Water Leak Alerts instance is supported."
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Water Leak Alerts",
+        "menu_options": {
+          "settings": "Notification settings",
+          "add_sensor": "Add water sensor",
+          "manage_sensors": "Edit or remove a sensor"
+        }
+      },
+      "settings": {
+        "title": "Notification settings",
+        "description": "Enter SMTP notify entity IDs and mobile notify service names, separated by commas or new lines.",
+        "data": {
+          "reminder_interval": "Email reminder interval (minutes)",
+          "email_targets": "Email notification targets (SMTP notify entity IDs)",
+          "mobile_targets": "Mobile notification targets (notify service names)"
+        }
+      },
+      "add_sensor": {
+        "title": "Add water sensor",
+        "description": "Select an existing Home Assistant water binary sensor. MQTT is optional and is used only for repeated wet-event timestamps.",
+        "data": {
+          "name": "Sensor name",
+          "entity_id": "Water sensor entity",
+          "mqtt_topic": "Optional MQTT wet-event topic",
+          "mqtt_payload": "MQTT wet payload"
+        }
+      },
+      "manage_sensors": {
+        "title": "Select sensor",
+        "description": "Choose the configured sensor to edit or remove.",
+        "data": {
+          "sensor_id": "Sensor"
+        }
+      },
+      "edit_sensor": {
+        "title": "Edit water sensor",
+        "description": "Change the sensor configuration or enable Delete sensor.",
+        "data": {
+          "name": "Sensor name",
+          "entity_id": "Water sensor entity",
+          "mqtt_topic": "Optional MQTT wet-event topic",
+          "mqtt_payload": "MQTT wet payload",
+          "enabled": "Enable monitoring",
+          "delete_sensor": "Delete this sensor"
+        }
+      }
+    },
+    "error": {
+      "sensor_already_added": "That Home Assistant entity is already configured."
+    },
+    "abort": {
+      "no_sensors_configured": {
+        "title": "No sensors configured",
+        "description": "Add a sensor before using sensor management."
+      },
+      "sensor_not_found": {
+        "title": "Sensor not found",
+        "description": "The selected sensor no longer exists."
+      }
+    }
+  }
+}
