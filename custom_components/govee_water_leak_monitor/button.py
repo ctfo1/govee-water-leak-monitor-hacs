@@ -25,6 +25,11 @@ class AcknowledgeButton(WaterLeakEntity, ButtonEntity):
     def __init__(self, coordinator, config):
         super().__init__(coordinator, config, "Acknowledge Leak")
 
+    @property
+    def available(self) -> bool:
+        data = self.coordinator.sensor_state(self.sensor_id)
+        return bool(data.get("active") and not data.get("acknowledged"))
+
     async def async_press(self):
         await self.coordinator.async_acknowledge(self.sensor_id)
 
@@ -37,6 +42,11 @@ class ResetAcknowledgmentButton(WaterLeakEntity, ButtonEntity):
     def __init__(self, coordinator, config):
         super().__init__(coordinator, config, "Reset Acknowledgment")
 
+    @property
+    def available(self) -> bool:
+        data = self.coordinator.sensor_state(self.sensor_id)
+        return bool(data.get("active") and data.get("acknowledged"))
+
     async def async_press(self):
         await self.coordinator.async_reset_acknowledgment(self.sensor_id)
 
@@ -48,6 +58,11 @@ class TestNotificationButton(WaterLeakEntity, ButtonEntity):
 
     def __init__(self, coordinator, config):
         super().__init__(coordinator, config, "Test Notification")
+
+    @property
+    def available(self) -> bool:
+        # A test notification is independent of the monitored sensor state.
+        return True
 
     async def async_press(self):
         await self.coordinator.async_test_notifications(self.sensor_id)

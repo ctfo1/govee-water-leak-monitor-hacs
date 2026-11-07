@@ -6,7 +6,7 @@
   ],
   "config_flow": true,
   "iot_class": "local_push",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "requirements": [],
   "after_dependencies": [
     "mqtt"
