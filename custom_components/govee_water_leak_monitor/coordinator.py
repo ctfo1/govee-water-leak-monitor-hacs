@@ -53,6 +53,7 @@ class WaterLeakCoordinator:
         self._discovery_prefixes: set[str] = {"homeassistant"}
         self._unsub_timer = None
         self._unsub_ack = None
+        self._unsub_device_registry = None
 
     @property
     def sensors(self) -> list[dict[str, Any]]:
@@ -93,6 +94,9 @@ class WaterLeakCoordinator:
         self._unsub_ack = self.hass.bus.async_listen(
             "mobile_app_notification_action", self._async_mobile_action
         )
+        self._unsub_device_registry = self.hass.bus.async_listen(
+            "device_registry_updated", self._async_device_registry_updated
+        )
 
     async def async_start_discovery(self) -> None:
         """Subscribe to HA MQTT discovery and rtl_433 Govee telemetry."""
@@ -131,6 +135,8 @@ class WaterLeakCoordinator:
             self._unsub_timer()
         if self._unsub_ack:
             self._unsub_ack()
+        if self._unsub_device_registry:
+            self._unsub_device_registry()
         for unsubscribe in self._mqtt_unsubs:
             unsubscribe()
         self._mqtt_unsubs.clear()
@@ -224,6 +230,7 @@ class WaterLeakCoordinator:
             "instance_id": instance_id,
             "sensor_number": sensor_number,
             "device_identifier": device_identifier,
+            "device_identifiers": list(mqtt_device.identifiers),
             "device_id": mqtt_device.id,
             "device_name": name,
             "source_entity_id": source_entity_id,
@@ -231,12 +238,21 @@ class WaterLeakCoordinator:
             "base_topic": state_topic.rsplit("/", 1)[0],
             "discovery_unique_id": unique_id,
         }
-        is_new = key not in self.discovered
+        previous = self.discovered.get(key)
+        # Re-link existing monitor entities if the MQTT device was deleted
+        # and later rediscovered (Home Assistant assigns a new registry ID).
+        needs_entities = previous is None or previous.get("device_id") != mqtt_device.id
+        if previous is not None:
+            previous.update(sensor)
+            sensor = previous
         self.discovered[key] = sensor
+        linked_entities = 0
+        if previous is not None and needs_entities:
+            linked_entities = self._link_registered_entities(key, mqtt_device.id)
         self._by_source[(instance_id, sensor_number)] = key
         self.sensor_state(key)
 
-        if is_new:
+        if needs_entities:
             _LOGGER.info(
                 "Discovered rtl_433 Govee Water sensor %s on existing HA device %s",
                 sensor_number,
@@ -355,8 +371,9 @@ class WaterLeakCoordinator:
         item = self.sensor_config(sensor_id)
         if item is None:
             return
-        title = f"Govee Water Leak Monitor: Test – {item['device_name']}"
-        message = f"This is a test notification for {item['device_name']}. No leak state was changed."
+        _, friendly, _ = self._sensor_context(item)
+        title = f"Govee Water Leak Monitor: Test – {friendly}"
+        message = f"This is a test notification for {friendly}. No leak state was changed."
         await self._async_send_email(item, title=title, message=message)
         await self._async_send_mobile(item, title, message)
 
@@ -423,8 +440,50 @@ class WaterLeakCoordinator:
         if item:
             self.hass.async_create_task(self.async_acknowledge(item["key"]))
 
-    def _sensor_context(self, item: dict[str, Any]) -> tuple[str, str, str]:
-        """Resolve the existing MQTT device's current name and assigned area."""
+    @callback
+    def _async_device_registry_updated(self, event) -> None:
+        """Refresh availability when a source MQTT device is removed or added."""
+        for sensor_id in self.discovered:
+            self._signal_update(sensor_id)
+
+    def device_exists(self, device_id: str) -> bool:
+        """Check whether the original MQTT device is still in the registry."""
+        return dr.async_get(self.hass).async_get(device_id) is not None
+
+    @callback
+    def _link_registered_entities(self, sensor_id: str, device_id: str) -> int:
+        """Move existing monitor entity-registry rows to a rediscovered device."""
+        entity_registry = er.async_get(self.hass)
+        prefix = f"{sensor_id}_"
+        linked = 0
+        for entity in list(entity_registry.entities.values()):
+            if (
+                entity.platform == DOMAIN
+                and entity.unique_id.startswith(prefix)
+            ):
+                linked += 1
+                if entity.device_id == device_id:
+                    continue
+                old_device_id = entity.device_id
+                entity_registry.async_update_entity(
+                    entity.entity_id, device_id=device_id
+                )
+                if old_device_id:
+                    device_registry = dr.async_get(self.hass)
+                    old_device = device_registry.async_get(old_device_id)
+                    remaining = er.async_entries_for_device(
+                        entity_registry, old_device_id, include_disabled_entities=True
+                    )
+                    if (
+                        old_device
+                        and not remaining
+                        and old_device.config_entries == {self.entry.entry_id}
+                    ):
+                        device_registry.async_remove_device(old_device_id)
+        return linked
+
+    def _sensor_context(self, item: dict[str, Any]) -> tuple[str | None, str, str]:
+        """Resolve the existing MQTT device's current name and optional area."""
         device = dr.async_get(self.hass).async_get(item["device_id"])
         source_state = (
             self.hass.states.get(item["source_entity_id"])
@@ -444,10 +503,9 @@ class WaterLeakCoordinator:
         if area_id:
             area = ar.async_get(self.hass).async_get_area(area_id)
             area_name = area.name if area else None
-        area = area_name or friendly
         home = self.hass.states.get("zone.home")
         home_name = home.attributes.get("friendly_name", "Home") if home else "Home"
-        return str(area), str(friendly), str(home_name)
+        return (str(area_name) if area_name else None), str(friendly), str(home_name)
 
     def _notification_text(self, item: dict[str, Any]) -> tuple[str, str, str]:
         area, friendly, home = self._sensor_context(item)
@@ -457,11 +515,12 @@ class WaterLeakCoordinator:
             stamp = dt_util.as_local(parsed).strftime("%Y-%m-%d %H:%M:%S") if parsed else "Unknown"
         else:
             stamp = "Unknown"
-        return (
-            f"Water Leak: {home}: {area}",
-            f"Water detected in {area} by {friendly} @ {stamp}",
-            area,
+        title = f"Water Leak: {home}: {area}" if area else f"Water Leak: {home}"
+        message = (
+            f"Water detected in {area} by {friendly} @ {stamp}"
+            if area else f"Water detected by {friendly} @ {stamp}"
         )
+        return title, message, area
 
     async def _async_show_alert(self, item: dict[str, Any]) -> None:
         title, message, _ = self._notification_text(item)
@@ -519,10 +578,15 @@ class WaterLeakCoordinator:
                 last_wet = self.sensor_state(item["key"]).get("last_wet")
                 parsed = dt_util.parse_datetime(last_wet) if last_wet else None
                 stamp = dt_util.as_local(parsed).strftime("%Y-%m-%d %H:%M:%S") if parsed else "Unknown"
-                title = f"Water Leak Alert Cleared: {self._sensor_context(item)[2]}: {area}"
+                home = self._sensor_context(item)[2]
+                title = (
+                    f"Water Leak Alert Cleared: {home}: {area}"
+                    if area else f"Water Leak Alert Cleared: {home}"
+                )
+                _, friendly, _ = self._sensor_context(item)
                 message = (
-                    f"Water leak alert cleared for {item['device_name']} in {area}. "
-                    f"Water last detected @ {stamp}"
+                    f"Water leak alert cleared for {friendly} in {area}. Water last detected @ {stamp}"
+                    if area else f"Water leak alert cleared for {friendly}. Water last detected @ {stamp}"
                 )
             else:
                 title, message = alert_title, alert_message

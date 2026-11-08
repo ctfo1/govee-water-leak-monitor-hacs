@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 from homeassistant.components.button import ButtonEntity
-from homeassistant.helpers.entity import EntityCategory
-
 from .entity import WaterLeakEntity
 
 
@@ -34,7 +32,7 @@ class AcknowledgeButton(WaterLeakEntity, ButtonEntity):
     @property
     def available(self) -> bool:
         data = self.coordinator.sensor_state(self.sensor_id)
-        return bool(data.get("active") and not data.get("acknowledged"))
+        return self.device_available and bool(data.get("active") and not data.get("acknowledged"))
 
     async def async_press(self):
         await self.coordinator.async_acknowledge(self.sensor_id)
@@ -48,7 +46,7 @@ class ResetToDryButton(WaterLeakEntity, ButtonEntity):
 
     @property
     def available(self) -> bool:
-        return bool(self.coordinator.sensor_state(self.sensor_id).get("active"))
+        return self.device_available and bool(self.coordinator.sensor_state(self.sensor_id).get("active"))
 
     async def async_press(self):
         await self.coordinator.async_reset_to_dry(self.sensor_id)
@@ -57,15 +55,13 @@ class ResetToDryButton(WaterLeakEntity, ButtonEntity):
 class ResetAcknowledgmentButton(WaterLeakEntity, ButtonEntity):
     """Re-enable reminders for an active leak."""
 
-    _attr_entity_category = EntityCategory.CONFIG
-
     def __init__(self, coordinator, config):
         super().__init__(coordinator, config, "Reset Acknowledgment")
 
     @property
     def available(self) -> bool:
         data = self.coordinator.sensor_state(self.sensor_id)
-        return bool(data.get("active") and data.get("acknowledged"))
+        return self.device_available and bool(data.get("active") and data.get("acknowledged"))
 
     async def async_press(self):
         await self.coordinator.async_reset_acknowledgment(self.sensor_id)
@@ -74,14 +70,12 @@ class ResetAcknowledgmentButton(WaterLeakEntity, ButtonEntity):
 class TestNotificationButton(WaterLeakEntity, ButtonEntity):
     """Send a test email and mobile notification."""
 
-    _attr_entity_category = EntityCategory.CONFIG
-
     def __init__(self, coordinator, config):
         super().__init__(coordinator, config, "Test Notification")
 
     @property
     def available(self) -> bool:
-        return True
+        return self.device_available
 
     async def async_press(self):
         await self.coordinator.async_test_notifications(self.sensor_id)

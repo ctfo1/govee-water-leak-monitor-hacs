@@ -5,7 +5,7 @@ Home Assistant custom integration for Govee Water sensors decoded by [rtl_433](h
 ## Features
 
 - Automatically discovers rtl_433 `Govee-Water` devices from Home Assistant MQTT discovery.
-- Adds monitoring entities to the **existing rtl_433 MQTT device**. It does not create a separate device.
+- Adds monitoring entities to the **existing rtl_433 MQTT device**. It does not create a separate device. Device names and areas remain controlled by Home Assistant.
 - Uses the sensor's `detect_wet` MQTT topic as the authoritative wet/dry state.
 - Sends email, mobile, and persistent notifications when a new leak episode starts.
 - Suppresses duplicate alerts while rtl_433 repeats wet packets; a subsequent `detect_wet=0` ends the episode.
@@ -60,4 +60,4 @@ The `event` field is informational only. Wet/dry state is determined exclusively
 
 ## Device matching
 
-The integration reads the identifiers from the rtl_433 MQTT discovery payload and looks up the corresponding Home Assistant device using the MQTT device-registry identifier. If it cannot find that existing device, it skips the sensor rather than creating a duplicate device.
+The integration reads the identifiers from the rtl_433 MQTT discovery payload and looks up the corresponding Home Assistant MQTT device. Because Home Assistant scopes device identifiers to config entries, the integration links its entity-registry entries directly to the existing MQTT device rather than trying to register a second device with the same identifier. If the MQTT device is deleted, monitor entities become unavailable; rediscovery of the same sensor reattaches them without losing monitor state.

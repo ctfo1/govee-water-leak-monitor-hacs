@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1
+
+- Fixed device association: monitor entities are now linked directly to the existing rtl_433 MQTT device instead of registering a second device. This accounts for Home Assistant scoping device identifiers to config entries.
+- Migrates existing v0.3.0 monitor entities onto their corresponding MQTT devices and removes empty duplicate monitor devices owned by this integration.
+- If an MQTT device is deleted, monitor entities become unavailable without creating a replacement device. Rediscovery of the same sensor reattaches existing entities to the newly registered MQTT device while preserving monitor state and settings.
+- Moved all four action buttons into the Controls group; none are classified as Configuration entities.
+- Fixed notifications for devices without an assigned area: the device name is shown once and the message no longer contains a fabricated location.
+- Test and recovery notifications now resolve the current device name dynamically.
+
 ## 0.3.0
 
 - Replaced manual moisture-entity setup with automatic rtl_433 Govee Water MQTT discovery.

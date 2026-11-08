@@ -4,7 +4,7 @@
   "codeowners": ["@ctfo1"],
   "config_flow": true,
   "iot_class": "local_push",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "requirements": [],
   "dependencies": ["mqtt"],
   "documentation": "https://github.com/ctfo1/govee-water-leak-monitor",
