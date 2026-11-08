@@ -1,39 +1,39 @@
-## 0.3.5
-- Fixed the card editor device selector closing during interaction by preserving the selector across Home Assistant state updates.
-- Removed Test Notification, Last Battery Report, and Last Notification from the card.
-- Moved Water last detected onto the Wet/Dry status line and retained Last Leak Started.
-- Replaced emoji with the example card's Material Design icons for water, water-off, battery, and alert.
-
 # Changelog
 
-## 0.3.3
-- Renamed Last Alert to Last Notification and update it whenever an integration notification is successfully sent.
-- Renamed Leak Started to Last Leak Started; retain its timestamp after the sensor reports dry, replacing it only when a new leak episode starts.
-- Preserve existing entity registry IDs and migrate the prior Last Alert timestamp so existing entity history and stored data are retained.
+## 0.3.7
+- Hide Water last detected on the Lovelace card when the value is Never.
+- Include the complete GitHub repository files in the release archive.
 
+## 0.3.6
+- Removed Last Leak Started from the Lovelace card.
+- Removed the duplicate icon beside Wet/Dry status.
+- Removed the circular background behind the large water icon and increased its visual size.
+- Battery icon reflects charge level; hide battery when unknown or unavailable.
 
-## 0.3.1
-
-- Fixed device association: monitor entities are now linked directly to the existing rtl_433 MQTT device instead of registering a second device. This accounts for Home Assistant scoping device identifiers to config entries.
-- Migrates existing v0.3.0 monitor entities onto their corresponding MQTT devices and removes empty duplicate monitor devices owned by this integration.
-- If an MQTT device is deleted, monitor entities become unavailable without creating a replacement device. Rediscovery of the same sensor reattaches existing entities to the newly registered MQTT device while preserving monitor state and settings.
-- Moved all four action buttons into the Controls group; none are classified as Configuration entities.
-- Fixed notifications for devices without an assigned area: the device name is shown once and the message no longer contains a fabricated location.
-- Test and recovery notifications now resolve the current device name dynamically.
-
-## 0.3.0
-
-- Replaced manual moisture-entity setup with automatic rtl_433 Govee Water MQTT discovery.
-- Matched discovered sensors to the existing MQTT device using the rtl_433 discovery device identifier; no separate device is created by this integration.
-- Switched leak state to the `detect_wet` MQTT field (`1` wet, `0` dry).
-- Changed Reset to Dry to publish `0` to the sensor's real MQTT state topic, allowing the existing MQTT moisture entity to update too.
-- Prevented repeated wet packets from starting duplicate leak episodes or duplicate notifications.
-- Added battery voltage, raw battery_ok, last battery report, and last rtl_433 event diagnostics.
-- Preserved notification targets, reminder interval, acknowledgment, and test notification behavior.
-- Migrates existing v0.2.x config entries and retains their notification settings while discarding manual sensor selections.
+## 0.3.5
+- Fixed card editor selector closing during interaction.
+- Removed Test Notification, Last Battery Report, and Last Notification from the card.
+- Moved Water last detected onto the Wet/Dry status line.
+- Used Material Design icons matching the example card.
 
 ## 0.3.4
+- Added a standalone Lovelace card and automatic resource registration in storage mode.
+- Added manual resource registration instructions for YAML mode.
+- Supports one card per sensor and discovers related monitor and rtl_433 battery entities through their shared device association.
 
-- Add a standalone Lovelace card, with no Mushroom, stack-in-card, or card-mod dependencies.
-- Automatically serve and register the card as a Lovelace resource in storage mode; document manual resource registration for YAML mode.
-- Support one card per sensor, discovering related monitor and rtl_433 battery entities through their shared device association.
+## 0.3.3
+- Renamed Last Alert to Last Notification.
+- Renamed Leak Started to Last Leak Started and retain its timestamp after dry.
+- Preserve existing entity registry IDs and migrate the prior Last Alert timestamp.
+
+## 0.3.1
+- Fixed device association so monitor entities are linked to the existing rtl_433 MQTT device.
+- Preserve monitor state and settings if the MQTT device is deleted; reattach on rediscovery.
+- Moved action buttons into the Controls group.
+- Fixed notification formatting for devices without an assigned area.
+
+## 0.3.0
+- Replaced manual moisture-entity setup with automatic rtl_433 Govee Water MQTT discovery.
+- Uses the `detect_wet` MQTT field as the authoritative wet/dry state.
+- Reset to Dry publishes `0` to the sensor's real MQTT state topic.
+- Prevented repeated wet packets from starting duplicate leak episodes or notifications.
