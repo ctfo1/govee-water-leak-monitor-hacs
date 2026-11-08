@@ -1,3 +1,9 @@
+## 0.3.5
+- Fixed the card editor device selector closing during interaction by preserving the selector across Home Assistant state updates.
+- Removed Test Notification, Last Battery Report, and Last Notification from the card.
+- Moved Water last detected onto the Wet/Dry status line and retained Last Leak Started.
+- Replaced emoji with the example card's Material Design icons for water, water-off, battery, and alert.
+
 # Changelog
 
 ## 0.3.3

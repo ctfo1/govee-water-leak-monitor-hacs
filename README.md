@@ -49,10 +49,10 @@ Battery percentage, battery voltage, and signal measurements remain provided by 
 
 ## Lovelace card
 
-Version 0.3.4 includes a standalone Lovelace card (no Mushroom, stack-in-card, card-mod, or other custom-card dependencies). In the default storage-mode dashboard configuration, the integration serves and registers the card automatically. If Lovelace is configured in YAML mode, add this resource manually:
+Version 0.3.5 includes a standalone Lovelace card (no Mushroom, stack-in-card, card-mod, or other custom-card dependencies). In the default storage-mode dashboard configuration, the integration serves and registers the card automatically. If Lovelace is configured in YAML mode, add this resource manually:
 
 ```yaml
-url: /govee_water_leak_monitor/govee-water-leak-card.js?v=0.3.4
+url: /govee_water_leak_monitor/govee-water-leak-card.js?v=0.3.5
 type: module
 ```
 
@@ -63,4 +63,4 @@ type: custom:govee-water-leak-card
 entity: binary_sensor.h5054_1_kitchen_sink_water_sensor
 ```
 
-The card uses the selected moisture binary sensor as the source of truth and discovers the other integration entities and rtl_433 battery entity from the same Home Assistant device. While wet, it displays the acknowledgment and Reset to Dry controls. Test Notification remains available on the card. The optional `show_details: false` setting hides the timestamp details.
+The card uses the selected moisture binary sensor as the source of truth and discovers the other integration entities and rtl_433 battery entity from the same Home Assistant device. While wet, it displays the acknowledgment and Reset to Dry controls. The card omits test notification and diagnostic timestamp details not needed for day-to-day monitoring. The optional `show_details: false` setting hides the timestamp details.

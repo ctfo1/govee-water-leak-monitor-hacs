@@ -12,7 +12,7 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 URL_PATH = f"/{DOMAIN}/govee-water-leak-card.js"
-RESOURCE_URL = f"{URL_PATH}?v=0.3.4"
+RESOURCE_URL = f"{URL_PATH}?v=0.3.5"
 
 
 async def async_register_static_card(hass: HomeAssistant) -> None:
