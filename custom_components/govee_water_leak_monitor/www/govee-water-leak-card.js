@@ -105,13 +105,13 @@ class GoveeWaterLeakCard extends HTMLElement {
     const showWetTime = wetTime.toLowerCase() !== "never";
     this.shadowRoot.innerHTML = `
       <style>
-        :host{display:block} ha-card{padding:14px 16px;border-radius:var(--ha-card-border-radius,12px);overflow:hidden}
-        .top{display:flex;align-items:center;gap:14px}.symbol{width:44px;height:44px;display:grid;place-items:center;background:transparent;color:${wet ? "var(--error-color)" : "var(--secondary-text-color)"}}
-        .symbol ha-icon{--mdc-icon-size:40px}.heading{min-width:0;flex:1}.name{font-size:16px;font-weight:600;overflow-wrap:anywhere}
-        .status-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px}.status{display:inline-flex;align-items:center;font-size:14px;color:${wet ? "var(--error-color)" : "var(--secondary-text-color)"}}.wet-time{font-size:12px;color:var(--secondary-text-color)}
-        .battery{display:flex;align-items:center;gap:4px;font-size:13px;color:var(--secondary-text-color);white-space:nowrap}.battery ha-icon{--mdc-icon-size:18px}
+        :host{display:block} ha-card{padding:9px 14px;border-radius:var(--ha-card-border-radius,12px);overflow:hidden}
+        .top{display:flex;align-items:center;gap:11px}.symbol{width:30px;height:30px;flex:0 0 30px;display:grid;place-items:center;background:transparent;color:${wet ? "var(--error-color)" : "var(--secondary-text-color)"}}
+        .symbol ha-icon{--mdc-icon-size:27px}.heading{min-width:0;flex:1}.name{font-size:16px;line-height:1.2;font-weight:600;overflow-wrap:anywhere}
+        .status-line{display:flex;align-items:baseline;gap:0;flex-wrap:wrap;margin-top:2px;line-height:1.25}.status{display:inline-flex;align-items:baseline;font-size:14px;line-height:1.25;color:${wet ? "var(--error-color)" : "var(--secondary-text-color)"}}.wet-time{font-size:14px;line-height:1.25;color:var(--secondary-text-color);margin-left:6px}.wet-time:before{content:"-";margin-right:6px;color:var(--secondary-text-color)}
+        .battery{display:flex;align-items:center;justify-content:center;gap:4px;font-size:12px;line-height:1;color:var(--primary-text-color);white-space:nowrap;align-self:center}.battery ha-icon{--mdc-icon-size:17px;display:block;flex:0 0 auto}.battery span{display:flex;align-items:center;line-height:1;min-height:17px}
         .details{display:grid;grid-template-columns:1fr;gap:12px;margin-top:14px;padding-top:12px;border-top:1px solid var(--divider-color)}.details div{display:flex;flex-direction:column;gap:3px;min-width:0}.details span{font-size:11px;color:var(--secondary-text-color)}.details b{font-size:12px;font-weight:500;overflow-wrap:anywhere}
-        .controls{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}.controls button{display:inline-flex;align-items:center;gap:6px;border:0;border-radius:18px;padding:8px 13px;background:var(--secondary-background-color);color:var(--primary-text-color);font:inherit;font-size:12px;cursor:pointer}.controls button ha-icon{--mdc-icon-size:16px}.controls button:disabled{opacity:.45;cursor:default}.ack{color:${ackState?.state === "on" ? "var(--warning-color)" : "var(--error-color)"}!important}
+        .controls{display:flex;gap:8px;justify-content:flex-end;margin-top:9px;flex-wrap:wrap}.controls button{display:inline-flex;align-items:center;gap:6px;border:0;border-radius:18px;padding:7px 12px;background:var(--secondary-background-color);color:var(--primary-text-color);font:inherit;font-size:12px;line-height:1.2;cursor:pointer}.controls button ha-icon{--mdc-icon-size:16px}.controls button:disabled{opacity:.45;cursor:default}.ack{color:${ackState?.state === "on" ? "var(--warning-color)" : "var(--error-color)"}!important}
         .message{padding:16px;color:var(--secondary-text-color)}
       </style>
       <ha-card>
@@ -124,7 +124,7 @@ class GoveeWaterLeakCard extends HTMLElement {
               ${showWetTime ? `<span class="wet-time">Water last detected ${this._escape(wetTime)}</span>` : ""}
             </div>
           </div>
-          ${batteryKnown ? `<div class="battery"><ha-icon icon="${batteryIcon}"></ha-icon>${this._escape(batteryState.state)}${this._escape(batteryState.attributes.unit_of_measurement || "%")}</div>` : ""}
+          ${batteryKnown ? `<div class="battery"><ha-icon icon="${batteryIcon}"></ha-icon><span>${this._escape(batteryState.state)}${this._escape(batteryState.attributes.unit_of_measurement || "%")}</span></div>` : ""}
         </div>
         ${wet ? `<div class="controls">
           ${ack ? `<button class="ack" data-action="ack"><ha-icon icon="mdi:alert"></ha-icon>${ackState?.state === "on" ? "Alert Acknowledged" : "Alert Active"}</button>` : ""}

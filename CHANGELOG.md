@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.8
+- Compact Lovelace card spacing to better match the original automation cards.
+- Align Wet/Dry and Water last detected on one baseline with a hyphen separator.
+- Center battery percentage vertically with its charge-level icon.
+
 ## 0.3.7
 - Hide Water last detected on the Lovelace card when the value is Never.
 - Include the complete GitHub repository files in the release archive.
