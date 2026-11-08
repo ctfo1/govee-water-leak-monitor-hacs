@@ -25,3 +25,9 @@
 - Added battery voltage, raw battery_ok, last battery report, and last rtl_433 event diagnostics.
 - Preserved notification targets, reminder interval, acknowledgment, and test notification behavior.
 - Migrates existing v0.2.x config entries and retains their notification settings while discarding manual sensor selections.
+
+## 0.3.4
+
+- Add a standalone Lovelace card, with no Mushroom, stack-in-card, or card-mod dependencies.
+- Automatically serve and register the card as a Lovelace resource in storage mode; document manual resource registration for YAML mode.
+- Support one card per sensor, discovering related monitor and rtl_433 battery entities through their shared device association.

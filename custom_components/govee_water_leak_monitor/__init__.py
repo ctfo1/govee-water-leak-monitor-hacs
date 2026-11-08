@@ -8,6 +8,7 @@ from homeassistant.helpers import entity_registry as er
 
 from .const import DEFAULT_OPTIONS, DOMAIN, PLATFORMS
 from .coordinator import WaterLeakCoordinator
+from .frontend import async_register_lovelace_resource, async_register_static_card
 
 
 def _options(entry: ConfigEntry) -> dict:
@@ -17,6 +18,7 @@ def _options(entry: ConfigEntry) -> dict:
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the integration (config-entry only)."""
+    await async_register_static_card(hass)
     return True
 
 
@@ -46,6 +48,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # Start discovery after platforms register their dynamic entity adders.
     await coordinator.async_start_discovery()
+    await async_register_lovelace_resource(hass)
     return True
 
 
