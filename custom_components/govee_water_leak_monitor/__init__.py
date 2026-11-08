@@ -22,6 +22,24 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a Govee Water Leak Monitor config entry."""
+    # Remove obsolete entities from v0.3.0/v0.3.1 before forwarding the
+    # replacement platforms. The source MQTT entities are never touched.
+    entity_registry = er.async_get(hass)
+    await entity_registry.async_wait_loaded()
+    obsolete = {
+        "binary_sensor": {"leak_alert_active", "acknowledged"},
+        "sensor": {"battery_voltage", "battery_ok_raw"},
+        "button": {"acknowledge_leak", "reset_acknowledgment"},
+    }
+    for registry_entry in list(entity_registry.entities.values()):
+        if registry_entry.platform != DOMAIN:
+            continue
+        if any(
+            registry_entry.unique_id.endswith("_" + suffix)
+            for suffix in obsolete.get(registry_entry.domain, set())
+        ):
+            entity_registry.async_remove(registry_entry.entity_id)
+
     coordinator = WaterLeakCoordinator(hass, entry, _options(entry))
     await coordinator.async_setup()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator

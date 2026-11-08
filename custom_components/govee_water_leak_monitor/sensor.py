@@ -16,44 +16,15 @@ async def async_setup_entry(hass, entry, async_add_entities):
         entities = []
         for config in configs:
             entities.extend((
-                BatteryVoltageSensor(coordinator, config),
-                BatteryOkSensor(coordinator, config),
                 LastBatteryReportSensor(coordinator, config),
                 LastWetSensor(coordinator, config),
+                LeakStartedSensor(coordinator, config),
                 LastAlertSensor(coordinator, config),
                 LastEventSensor(coordinator, config),
             ))
         return entities
 
     coordinator.register_entity_adder("sensor", async_add_entities, create)
-
-
-class BatteryVoltageSensor(WaterLeakEntity, SensorEntity):
-    """Most recently reported battery voltage."""
-
-    _attr_device_class = SensorDeviceClass.VOLTAGE
-    _attr_native_unit_of_measurement = "mV"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, coordinator, config):
-        super().__init__(coordinator, config, "Battery Voltage")
-
-    @property
-    def native_value(self):
-        return self.coordinator.sensor_state(self.sensor_id).get("battery_mv")
-
-
-class BatteryOkSensor(WaterLeakEntity, SensorEntity):
-    """Raw battery_ok value reported by rtl_433 (decoder-specific)."""
-
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, coordinator, config):
-        super().__init__(coordinator, config, "Battery OK (raw)")
-
-    @property
-    def native_value(self):
-        return self.coordinator.sensor_state(self.sensor_id).get("battery_ok")
 
 
 class _TimestampSensor(WaterLeakEntity, SensorEntity):
@@ -78,6 +49,11 @@ class LastBatteryReportSensor(_TimestampSensor):
 class LastWetSensor(_TimestampSensor):
     def __init__(self, coordinator, config):
         super().__init__(coordinator, config, "Last Wet Event", "last_wet")
+
+
+class LeakStartedSensor(_TimestampSensor):
+    def __init__(self, coordinator, config):
+        super().__init__(coordinator, config, "Leak Started", "leak_started")
 
 
 class LastAlertSensor(_TimestampSensor):

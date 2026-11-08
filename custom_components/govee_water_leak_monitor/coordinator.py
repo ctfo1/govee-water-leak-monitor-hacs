@@ -65,17 +65,24 @@ class WaterLeakCoordinator:
 
     def sensor_state(self, sensor_id: str) -> dict[str, Any]:
         """Return persisted state, creating its default record if needed."""
-        return self.state.setdefault(sensor_id, {
+        defaults = {
             "active": False,
             "acknowledged": False,
             "last_wet": None,
+            "leak_started": None,
             "last_alert": None,
-            "battery_mv": None,
-            "battery_ok": None,
             "last_battery_report": None,
             "last_event": None,
             "last_event_time": None,
-        })
+        }
+        data = self.state.setdefault(sensor_id, {})
+        for key, value in defaults.items():
+            data.setdefault(key, value)
+        # Before v0.3.2, last_wet held the start of the episode. Preserve it
+        # as the best available start time when upgrading an active leak.
+        if data.get("active") and not data.get("leak_started"):
+            data["leak_started"] = data.get("last_wet")
+        return data
 
     def register_entity_adder(self, platform: str, add_entities: Callable, factory: Callable) -> None:
         """Register a platform callback and add sensors already discovered."""
@@ -270,7 +277,7 @@ class WaterLeakCoordinator:
             elif source_state is not None and source_state.state == "off":
                 data = self.sensor_state(key)
                 if data.get("active"):
-                    data.update({"active": False, "acknowledged": False})
+                    data.update({"active": False, "acknowledged": False, "leak_started": None})
                     self._signal_update(key)
                     await self._async_clear_notifications(sensor)
                     await self._async_save()
@@ -288,7 +295,7 @@ class WaterLeakCoordinator:
         self.hass.async_create_task(self._async_process_sensor_field(key, field, message.payload))
 
     async def _async_process_sensor_field(self, sensor_id: str, field: str, payload: str) -> None:
-        """Process detect_wet, battery, and event fields independently."""
+        """Process wet-state and event fields independently."""
         item = self.sensor_config(sensor_id)
         if item is None:
             return
@@ -302,53 +309,29 @@ class WaterLeakCoordinator:
                 await self._async_leak_cleared(item)
             return
 
-        changed = False
-        if field == "battery_mV":
-            try:
-                number = float(value)
-                data["battery_mv"] = int(number) if number.is_integer() else number
-                data["last_battery_report"] = dt_util.utcnow().isoformat()
-                changed = True
-            except ValueError:
-                _LOGGER.debug("Invalid battery_mV value from %s: %s", item["base_topic"], value)
-        elif field == "battery_ok":
-            try:
-                number = float(value)
-                data["battery_ok"] = int(number) if number.is_integer() else number
-                data["last_battery_report"] = dt_util.utcnow().isoformat()
-                changed = True
-            except ValueError:
-                _LOGGER.debug("Invalid battery_ok value from %s: %s", item["base_topic"], value)
-        elif field == "event":
+        if field == "event":
+            now = dt_util.utcnow().isoformat()
             data["last_event"] = value
-            data["last_event_time"] = dt_util.utcnow().isoformat()
-            changed = True
+            data["last_event_time"] = now
+            if value.casefold() == "battery report":
+                data["last_battery_report"] = now
+            self._signal_update(sensor_id)
+            await self._async_save()
 
-        if changed:
+    async def async_set_acknowledged(self, sensor_id: str, acknowledged: bool) -> None:
+        """Set acknowledgment for the current leak episode."""
+        if self.sensor_config(sensor_id) is None:
+            return
+        data = self.sensor_state(sensor_id)
+        desired = bool(acknowledged) and bool(data.get("active"))
+        if data.get("acknowledged") != desired:
+            data["acknowledged"] = desired
             self._signal_update(sensor_id)
             await self._async_save()
 
     async def async_acknowledge(self, sensor_id: str) -> None:
-        """Acknowledge the current leak episode and stop reminders."""
-        item = self.sensor_config(sensor_id)
-        if item is None:
-            return
-        data = self.sensor_state(sensor_id)
-        if data.get("active") and not data.get("acknowledged"):
-            data["acknowledged"] = True
-            self._signal_update(sensor_id)
-            await self._async_save()
-
-    async def async_reset_acknowledgment(self, sensor_id: str) -> None:
-        """Re-enable reminders for an active episode."""
-        item = self.sensor_config(sensor_id)
-        if item is None:
-            return
-        data = self.sensor_state(sensor_id)
-        if data.get("active") and data.get("acknowledged"):
-            data["acknowledged"] = False
-            self._signal_update(sensor_id)
-            await self._async_save()
+        """Acknowledge the current leak episode (mobile notification action)."""
+        await self.async_set_acknowledged(sensor_id, True)
 
     async def async_reset_to_dry(self, sensor_id: str) -> None:
         """Publish dry to the actual MQTT state topic; state follows MQTT echo."""
@@ -387,6 +370,7 @@ class WaterLeakCoordinator:
             "active": True,
             "acknowledged": False,
             "last_wet": data.get("last_wet") or now,
+            "leak_started": data.get("leak_started") or now,
             "last_alert": data.get("last_alert") or now,
         })
         self._signal_update(item["key"])
@@ -394,15 +378,18 @@ class WaterLeakCoordinator:
         await self._async_save()
 
     async def _async_leak_started(self, item: dict[str, Any]) -> None:
-        """Start one leak episode; repeated wet packets do not duplicate alerts."""
+        """Record every wet report but start/alert only once per episode."""
         data = self.sensor_state(item["key"])
-        if data.get("active"):
-            return
         now = dt_util.utcnow().isoformat()
+        data["last_wet"] = now
+        if data.get("active"):
+            self._signal_update(item["key"])
+            await self._async_save()
+            return
         data.update({
             "active": True,
             "acknowledged": False,
-            "last_wet": now,
+            "leak_started": now,
             "last_alert": now,
         })
         self._signal_update(item["key"])
@@ -417,6 +404,7 @@ class WaterLeakCoordinator:
             return
         data["active"] = False
         data["acknowledged"] = False
+        data["leak_started"] = None
         self._signal_update(item["key"])
         await self._async_clear_notifications(item)
         await self._async_send_email(item, recovery=True)

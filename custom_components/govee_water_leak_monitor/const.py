@@ -1,6 +1,6 @@
 """Constants for Govee Water Leak Monitor."""
 DOMAIN = "govee_water_leak_monitor"
-PLATFORMS = ["binary_sensor", "sensor", "button"]
+PLATFORMS = ["sensor", "button", "switch"]
 
 CONF_REMINDER_INTERVAL = "reminder_interval"
 CONF_EMAIL_TARGETS = "email_targets"

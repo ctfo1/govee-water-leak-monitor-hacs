@@ -13,29 +13,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
         entities = []
         for config in configs:
             entities.extend((
-                AcknowledgeButton(coordinator, config),
                 ResetToDryButton(coordinator, config),
-                ResetAcknowledgmentButton(coordinator, config),
                 TestNotificationButton(coordinator, config),
             ))
         return entities
 
     coordinator.register_entity_adder("button", async_add_entities, create)
-
-
-class AcknowledgeButton(WaterLeakEntity, ButtonEntity):
-    """Acknowledge the active leak and stop email reminders."""
-
-    def __init__(self, coordinator, config):
-        super().__init__(coordinator, config, "Acknowledge Leak")
-
-    @property
-    def available(self) -> bool:
-        data = self.coordinator.sensor_state(self.sensor_id)
-        return self.device_available and bool(data.get("active") and not data.get("acknowledged"))
-
-    async def async_press(self):
-        await self.coordinator.async_acknowledge(self.sensor_id)
 
 
 class ResetToDryButton(WaterLeakEntity, ButtonEntity):
@@ -50,21 +33,6 @@ class ResetToDryButton(WaterLeakEntity, ButtonEntity):
 
     async def async_press(self):
         await self.coordinator.async_reset_to_dry(self.sensor_id)
-
-
-class ResetAcknowledgmentButton(WaterLeakEntity, ButtonEntity):
-    """Re-enable reminders for an active leak."""
-
-    def __init__(self, coordinator, config):
-        super().__init__(coordinator, config, "Reset Acknowledgment")
-
-    @property
-    def available(self) -> bool:
-        data = self.coordinator.sensor_state(self.sensor_id)
-        return self.device_available and bool(data.get("active") and data.get("acknowledged"))
-
-    async def async_press(self):
-        await self.coordinator.async_reset_acknowledgment(self.sensor_id)
 
 
 class TestNotificationButton(WaterLeakEntity, ButtonEntity):
