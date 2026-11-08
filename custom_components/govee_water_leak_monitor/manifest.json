@@ -1,16 +1,12 @@
 {
   "domain": "govee_water_leak_monitor",
   "name": "Govee Water Leak Monitor",
-  "codeowners": [
-    "@ctfo1"
-  ],
+  "codeowners": ["@ctfo1"],
   "config_flow": true,
   "iot_class": "local_push",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "requirements": [],
-  "after_dependencies": [
-    "mqtt"
-  ],
+  "dependencies": ["mqtt"],
   "documentation": "https://github.com/ctfo1/govee-water-leak-monitor",
   "issue_tracker": "https://github.com/ctfo1/govee-water-leak-monitor/issues"
 }

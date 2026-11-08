@@ -1,4 +1,4 @@
-"""Binary sensors for Govee Water Leak Monitor."""
+"""Leak and acknowledgment binary sensors."""
 from __future__ import annotations
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
@@ -8,11 +8,16 @@ from .entity import WaterLeakEntity
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
+    """Register entities for sensors discovered from rtl_433 MQTT discovery."""
     coordinator = hass.data["govee_water_leak_monitor"][entry.entry_id]
-    entities = []
-    for config in coordinator.sensors:
-        entities.extend([LeakActiveBinarySensor(coordinator, config), AcknowledgedBinarySensor(coordinator, config)])
-    async_add_entities(entities)
+
+    def create(configs):
+        entities = []
+        for config in configs:
+            entities.extend((LeakActiveBinarySensor(coordinator, config), AcknowledgedBinarySensor(coordinator, config)))
+        return entities
+
+    coordinator.register_entity_adder("binary_sensor", async_add_entities, create)
 
 
 class LeakActiveBinarySensor(WaterLeakEntity, BinarySensorEntity):

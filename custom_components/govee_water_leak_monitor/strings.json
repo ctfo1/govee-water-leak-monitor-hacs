@@ -3,13 +3,17 @@
     "step": {
       "user": {
         "title": "Govee Water Leak Monitor",
-        "description": "Set up the integration. Add water leak sensors after setup."
+        "description": "MQTT is required. Govee Water sensors published by rtl_433 are discovered automatically."
       }
     },
     "abort": {
       "already_configured": {
         "title": "Already configured",
         "description": "Only one Govee Water Leak Monitor instance is supported."
+      },
+      "mqtt_not_loaded": {
+        "title": "MQTT is required",
+        "description": "Configure and start the Home Assistant MQTT integration before adding Govee Water Leak Monitor."
       }
     }
   },
@@ -18,62 +22,17 @@
       "init": {
         "title": "Govee Water Leak Monitor",
         "menu_options": {
-          "settings": "Notification targets and reminders",
-          "add_sensor": "Add water leak sensor",
-          "manage_sensors": "Edit or remove a sensor"
+          "settings": "Notification targets and reminders"
         }
       },
       "settings": {
         "title": "Notification settings",
-        "description": "Choose the SMTP email notification entities and Home Assistant notify services to use.",
+        "description": "Choose the SMTP email notification entities, Home Assistant notify services, and reminder interval.",
         "data": {
           "reminder_interval": "Email reminder interval (minutes)",
           "email_targets": "Email targets (SMTP notify entities)",
           "mobile_targets": "Mobile notification targets"
         }
-      },
-      "add_sensor": {
-        "title": "Add water leak sensor",
-        "description": "Only binary sensors with the Moisture device class are offered. MQTT is optional and records repeated wet events.",
-        "data": {
-          "name": "Sensor name",
-          "entity_id": "Water leak sensor entity",
-          "mqtt_topic": "Optional MQTT wet-event topic",
-          "mqtt_payload": "MQTT wet payload"
-        }
-      },
-      "manage_sensors": {
-        "title": "Select sensor",
-        "description": "Choose the configured sensor to edit or remove.",
-        "data": {
-          "sensor_id": "Sensor"
-        }
-      },
-      "edit_sensor": {
-        "title": "Edit water leak sensor",
-        "description": "Change the sensor configuration or enable Delete sensor.",
-        "data": {
-          "name": "Sensor name",
-          "entity_id": "Water leak sensor entity",
-          "mqtt_topic": "Optional MQTT wet-event topic",
-          "mqtt_payload": "MQTT wet payload",
-          "enabled": "Enable monitoring",
-          "delete_sensor": "Delete this sensor"
-        }
-      }
-    },
-    "error": {
-      "sensor_already_added": "That Home Assistant entity is already configured.",
-      "not_a_water_sensor": "Select a binary sensor with the Moisture device class."
-    },
-    "abort": {
-      "no_sensors_configured": {
-        "title": "No sensors configured",
-        "description": "Add a sensor before using sensor management."
-      },
-      "sensor_not_found": {
-        "title": "Sensor not found",
-        "description": "The selected sensor no longer exists."
       }
     }
   }

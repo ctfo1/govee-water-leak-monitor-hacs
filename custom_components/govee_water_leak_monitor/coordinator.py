@@ -1,27 +1,27 @@
-"""Runtime monitoring and notification coordinator."""
+"""rtl_433 MQTT discovery, leak state, persistence, and notifications."""
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import re
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er
-from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
-from homeassistant.util import dt as dt_util
+from homeassistant.util import dt as dt_util, slugify
 
 from .const import (
     CONF_EMAIL_TARGETS,
-    CONF_ENABLED,
-    CONF_ENTITY_ID,
     CONF_MOBILE_TARGETS,
-    CONF_MQTT_PAYLOAD,
-    CONF_MQTT_TOPIC,
     CONF_REMINDER_INTERVAL,
-    CONF_SENSORS,
-    DEFAULT_MQTT_PAYLOAD,
+    DEFAULT_OPTIONS,
     DOMAIN,
     SIGNAL_UPDATE,
     STORAGE_KEY,
@@ -29,77 +29,104 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+_RTL433_TOPIC_RE = re.compile(
+    r"^rtl_433/([^/]+)/devices/Govee-Water/([^/]+)/([^/]+)$"
+)
+_STATE_TOPIC_RE = re.compile(
+    r"^rtl_433/([^/]+)/devices/Govee-Water/([^/]+)/detect_wet$"
+)
 
 
 class WaterLeakCoordinator:
-    """Coordinate sensor state, persistent episode state and notifications."""
+    """Coordinate automatically discovered Govee Water sensors."""
 
     def __init__(self, hass: HomeAssistant, entry, options: dict[str, Any]) -> None:
         self.hass = hass
         self.entry = entry
-        self.options = options
+        self.options = {**DEFAULT_OPTIONS, **options}
         self.store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY}_{entry.entry_id}")
         self.state: dict[str, dict[str, Any]] = {}
-        self._unsub_state = None
+        self.discovered: dict[str, dict[str, Any]] = {}
+        self._by_source: dict[tuple[str, str], str] = {}
+        self._entity_adders: dict[str, tuple[Callable, Callable]] = {}
+        self._mqtt_unsubs: list[Callable] = []
+        self._discovery_prefixes: set[str] = {"homeassistant"}
         self._unsub_timer = None
         self._unsub_ack = None
-        self._mqtt_unsubs: list[Any] = []
 
     @property
     def sensors(self) -> list[dict[str, Any]]:
-        return [item for item in self.options.get(CONF_SENSORS, []) if item.get(CONF_ENABLED, True)]
+        """All currently discovered rtl_433 sensors."""
+        return list(self.discovered.values())
 
     def sensor_config(self, sensor_id: str) -> dict[str, Any] | None:
-        return next((item for item in self.sensors if item["id"] == sensor_id), None)
+        return self.discovered.get(sensor_id)
 
     def sensor_state(self, sensor_id: str) -> dict[str, Any]:
+        """Return persisted state, creating its default record if needed."""
         return self.state.setdefault(sensor_id, {
             "active": False,
             "acknowledged": False,
             "last_wet": None,
             "last_alert": None,
+            "battery_mv": None,
+            "battery_ok": None,
+            "last_battery_report": None,
+            "last_event": None,
+            "last_event_time": None,
         })
 
+    def register_entity_adder(self, platform: str, add_entities: Callable, factory: Callable) -> None:
+        """Register a platform callback and add sensors already discovered."""
+        self._entity_adders[platform] = (add_entities, factory)
+        if self.discovered:
+            add_entities(factory(self.sensors))
+
     async def async_setup(self) -> None:
-        """Load state, reconcile active sensors and start listeners."""
+        """Load persistent state and start reminder/mobile-action listeners."""
         stored = await self.store.async_load() or {}
         self.state = stored.get("sensors", {})
-        entity_ids = [item[CONF_ENTITY_ID] for item in self.sensors]
-        for item in self.sensors:
-            sensor_state = self.sensor_state(item["id"])
-            if sensor_state.get("entity_id") not in (None, item[CONF_ENTITY_ID]):
-                sensor_state.update({
-                    "active": False, "acknowledged": False,
-                    "last_wet": None, "last_alert": None,
-                })
-            sensor_state["entity_id"] = item[CONF_ENTITY_ID]
-            current = self.hass.states.get(item[CONF_ENTITY_ID])
-            is_wet = current is not None and current.state == "on"
-            was_active = sensor_state.get("active", False)
-            sensor_state["active"] = is_wet
-            if is_wet:
-                await self._async_show_alert(item, startup=True)
-            elif was_active:
-                sensor_state["acknowledged"] = False
-                await self._async_clear_notifications(item)
-        if entity_ids:
-            self._unsub_state = async_track_state_change_event(
-                self.hass, entity_ids, self._async_state_changed
-            )
-        interval = max(1, int(self.options.get(CONF_REMINDER_INTERVAL, 10)))
+        interval = max(1, int(self.options.get(CONF_REMINDER_INTERVAL, DEFAULT_OPTIONS[CONF_REMINDER_INTERVAL])))
         self._unsub_timer = async_track_time_interval(
             self.hass, self._async_reminder_tick, timedelta(minutes=interval)
         )
-        await self._async_subscribe_mqtt()
         self._unsub_ack = self.hass.bus.async_listen(
             "mobile_app_notification_action", self._async_mobile_action
         )
-        await self._async_save()
+
+    async def async_start_discovery(self) -> None:
+        """Subscribe to HA MQTT discovery and rtl_433 Govee telemetry."""
+        if "mqtt" not in self.hass.config.components:
+            raise HomeAssistantError("The MQTT integration must be configured and loaded")
+
+        from homeassistant.components import mqtt
+
+        mqtt_entries = self.hass.config_entries.async_entries("mqtt")
+        prefixes = {
+            config_entry.options.get("discovery_prefix")
+            or config_entry.data.get("discovery_prefix")
+            or "homeassistant"
+            for config_entry in mqtt_entries
+        } or {"homeassistant"}
+        self._discovery_prefixes = prefixes
+        for prefix in prefixes:
+            for topic in (f"{prefix}/+/+/config", f"{prefix}/+/+/+/config"):
+                unsub = await mqtt.async_subscribe(
+                    self.hass, topic, self._async_discovery_message, qos=0
+                )
+                self._mqtt_unsubs.append(unsub)
+
+        unsub = await mqtt.async_subscribe(
+            self.hass,
+            "rtl_433/+/devices/Govee-Water/+/+",
+            self._async_rtl433_message,
+            qos=0,
+        )
+        self._mqtt_unsubs.append(unsub)
+        _LOGGER.info("Listening for rtl_433 Govee Water MQTT sensors")
 
     async def async_shutdown(self) -> None:
-        """Remove listeners and subscriptions."""
-        if self._unsub_state:
-            self._unsub_state()
+        """Remove timers and MQTT subscriptions."""
         if self._unsub_timer:
             self._unsub_timer()
         if self._unsub_ack:
@@ -108,122 +135,191 @@ class WaterLeakCoordinator:
             unsubscribe()
         self._mqtt_unsubs.clear()
 
-    async def _async_subscribe_mqtt(self) -> None:
-        """Subscribe to configured optional MQTT wet-event topics."""
-        if not any(item.get(CONF_MQTT_TOPIC) for item in self.sensors):
+    @callback
+    def _async_discovery_message(self, message) -> None:
+        """Queue processing of an MQTT discovery config message."""
+        self.hass.async_create_task(self._async_process_discovery(message.topic, message.payload))
+
+    async def _async_process_discovery(self, topic: str, payload: str) -> None:
+        """Match rtl_433 discovery metadata to its existing MQTT device."""
+        try:
+            config = json.loads(payload)
+        except (TypeError, json.JSONDecodeError):
             return
-        if "mqtt" not in self.hass.config.components:
-            _LOGGER.warning("MQTT topics are configured, but the MQTT integration is not loaded")
+
+        parts = topic.split("/")
+        if len(parts) < 4 or parts[0] not in self._discovery_prefixes or parts[1] != "binary_sensor":
             return
-        from homeassistant.components import mqtt
+        device_data = config.get("device") or {}
+        if device_data.get("model") != "Govee-Water":
+            return
+        if device_data.get("manufacturer") != "rtl_433":
+            return
 
-        for item in self.sensors:
-            topic = item.get(CONF_MQTT_TOPIC)
-            if not topic:
-                continue
-            sensor_id = item["id"]
-            expected = item.get(CONF_MQTT_PAYLOAD, DEFAULT_MQTT_PAYLOAD)
+        state_topic = config.get("state_topic", "")
+        match = _STATE_TOPIC_RE.match(state_topic)
+        if not match:
+            return
+        instance_id, sensor_number = match.groups()
+        identifiers = device_data.get("identifiers", [])
+        if isinstance(identifiers, str):
+            identifiers = [identifiers]
+        if not identifiers:
+            _LOGGER.debug("Ignoring Govee discovery without device identifiers: %s", topic)
+            return
 
-            @callback
-            def message_received(message, _sensor_id=sensor_id, _expected=expected):
-                if message.payload == _expected:
-                    self.hass.async_create_task(self._async_mqtt_wet(_sensor_id))
+        device_registry = dr.async_get(self.hass)
+        mqtt_device = None
+        device_identifier = None
+        mqtt_entries = self.hass.config_entries.async_entries("mqtt")
+        # MQTT's own discovery handler and our subscriber receive the retained
+        # config around the same time. Allow its device registration task to
+        # finish before deciding that the device is missing.
+        for attempt in range(5):
+            for identifier in identifiers:
+                for mqtt_entry in mqtt_entries:
+                    mqtt_device = device_registry.async_get_device_by_identifier(
+                        ("mqtt", str(identifier)), mqtt_entry.entry_id
+                    )
+                    if mqtt_device:
+                        device_identifier = str(identifier)
+                        break
+                if mqtt_device:
+                    break
+            if mqtt_device:
+                break
+            if attempt < 4:
+                await asyncio.sleep(0.25)
+        if mqtt_device is None:
+            # The MQTT integration normally registers the device before our
+            # discovery subscriber receives the retained config. Never create
+            # a substitute device: wait for a subsequent config publication.
+            _LOGGER.debug(
+                "rtl_433 device not present in HA device registry yet: %s", identifiers
+            )
+            return
 
-            unsub = await mqtt.async_subscribe(self.hass, topic, message_received, qos=0)
-            self._mqtt_unsubs.append(unsub)
+        unique_id = config.get("unique_id")
+        source_entity_id = None
+        if unique_id:
+            entity_registry = er.async_get(self.hass)
+            for entity in er.async_entries_for_device(entity_registry, mqtt_device.id):
+                if (
+                    entity.platform == "mqtt"
+                    and entity.entity_id.startswith("binary_sensor.")
+                    and entity.unique_id == unique_id
+                ):
+                    source_entity_id = entity.entity_id
+                    break
+
+        key = slugify(f"{instance_id}_{sensor_number}")
+        name = (
+            mqtt_device.name_by_user
+            or mqtt_device.name
+            or device_data.get("name")
+            or f"Govee Water {sensor_number}"
+        )
+        sensor = {
+            "key": key,
+            "instance_id": instance_id,
+            "sensor_number": sensor_number,
+            "device_identifier": device_identifier,
+            "device_id": mqtt_device.id,
+            "device_name": name,
+            "source_entity_id": source_entity_id,
+            "state_topic": state_topic,
+            "base_topic": state_topic.rsplit("/", 1)[0],
+            "discovery_unique_id": unique_id,
+        }
+        is_new = key not in self.discovered
+        self.discovered[key] = sensor
+        self._by_source[(instance_id, sensor_number)] = key
+        self.sensor_state(key)
+
+        if is_new:
+            _LOGGER.info(
+                "Discovered rtl_433 Govee Water sensor %s on existing HA device %s",
+                sensor_number,
+                mqtt_device.name_by_user or mqtt_device.name or mqtt_device.id,
+            )
+            for add_entities, factory in self._entity_adders.values():
+                add_entities(factory([sensor]))
+
+        # Restore a wet state already held by the MQTT moisture entity. This
+        # is a startup reconciliation only; no new email is sent for it.
+        if source_entity_id:
+            source_state = self.hass.states.get(source_entity_id)
+            if source_state is not None and source_state.state == "on":
+                await self._async_restore_wet(sensor)
+            elif source_state is not None and source_state.state == "off":
+                data = self.sensor_state(key)
+                if data.get("active"):
+                    data.update({"active": False, "acknowledged": False})
+                    self._signal_update(key)
+                    await self._async_clear_notifications(sensor)
+                    await self._async_save()
 
     @callback
-    def _async_mobile_action(self, event) -> None:
-        """Handle acknowledge actions from mobile notifications."""
-        action = event.data.get("action", "")
-        if not action.startswith("ACK_govee_water_leak_"):
+    def _async_rtl433_message(self, message) -> None:
+        """Handle a single field published by rtl_433."""
+        match = _RTL433_TOPIC_RE.match(message.topic)
+        if not match:
             return
-        notification_id = action.removeprefix("ACK_")
-        item = next((cfg for cfg in self.sensors if self._notification_id(cfg) == notification_id), None)
-        if item:
-            self.hass.async_create_task(self.async_acknowledge(item["id"]))
+        instance_id, sensor_number, field = match.groups()
+        key = self._by_source.get((instance_id, sensor_number))
+        if key is None:
+            return
+        self.hass.async_create_task(self._async_process_sensor_field(key, field, message.payload))
 
-    async def _async_mqtt_wet(self, sensor_id: str) -> None:
+    async def _async_process_sensor_field(self, sensor_id: str, field: str, payload: str) -> None:
+        """Process detect_wet, battery, and event fields independently."""
         item = self.sensor_config(sensor_id)
         if item is None:
             return
-        current = self.hass.states.get(item[CONF_ENTITY_ID])
         data = self.sensor_state(sensor_id)
-        # MQTT is supplementary: it refreshes an already-active leak even if
-        # the source entity temporarily becomes unavailable. It never creates
-        # a new leak episode on its own.
-        if not data.get("active") and (current is None or current.state != "on"):
-            return
-        data["last_wet"] = dt_util.utcnow().isoformat()
-        data["entity_id"] = item[CONF_ENTITY_ID]
-        # Publish entity state before notification services can delay it.
-        self._signal_update(sensor_id)
-        await self._async_show_alert(item)
-        await self._async_save()
+        value = str(payload).strip()
 
-    @callback
-    def _async_state_changed(self, event) -> None:
-        entity_id = event.data["entity_id"]
-        old_state = event.data.get("old_state")
-        new_state = event.data.get("new_state")
-        if new_state is None:
+        if field == "detect_wet":
+            if value in {"1", "true", "True"}:
+                await self._async_leak_started(item)
+            elif value in {"0", "false", "False"}:
+                await self._async_leak_cleared(item)
             return
-        item = next((cfg for cfg in self.sensors if cfg[CONF_ENTITY_ID] == entity_id), None)
-        if item is None:
-            return
-        if new_state.state == "on" and (old_state is None or old_state.state != "on"):
-            if old_state is None or old_state.state in ("unknown", "unavailable"):
-                self.hass.async_create_task(self._async_restore_wet(item))
-            else:
-                self.hass.async_create_task(self._async_leak_started(item))
-        elif new_state.state == "off" and old_state is not None and old_state.state == "on":
-            self.hass.async_create_task(self._async_leak_cleared(item))
 
-    async def _async_restore_wet(self, item: dict[str, Any]) -> None:
-        """Restore a sensor that first becomes available already wet."""
-        data = self.sensor_state(item["id"])
-        data["active"] = True
-        self._signal_update(item["id"])
-        await self._async_show_alert(item, startup=True)
-        await self._async_save()
+        changed = False
+        if field == "battery_mV":
+            try:
+                number = float(value)
+                data["battery_mv"] = int(number) if number.is_integer() else number
+                data["last_battery_report"] = dt_util.utcnow().isoformat()
+                changed = True
+            except ValueError:
+                _LOGGER.debug("Invalid battery_mV value from %s: %s", item["base_topic"], value)
+        elif field == "battery_ok":
+            try:
+                number = float(value)
+                data["battery_ok"] = int(number) if number.is_integer() else number
+                data["last_battery_report"] = dt_util.utcnow().isoformat()
+                changed = True
+            except ValueError:
+                _LOGGER.debug("Invalid battery_ok value from %s: %s", item["base_topic"], value)
+        elif field == "event":
+            data["last_event"] = value
+            data["last_event_time"] = dt_util.utcnow().isoformat()
+            changed = True
 
-    async def _async_leak_started(self, item: dict[str, Any]) -> None:
-        data = self.sensor_state(item["id"])
-        if data.get("active"):
-            return
-        data.update({
-            "active": True,
-            "acknowledged": False,
-            "entity_id": item[CONF_ENTITY_ID],
-            "last_wet": dt_util.utcnow().isoformat(),
-            "last_alert": dt_util.utcnow().isoformat(),
-        })
-        # Publish the new state before calling external notification services.
-        self._signal_update(item["id"])
-        await self._async_send_email(item, recovery=False)
-        await self._async_show_alert(item)
-        await self._async_save()
-
-    async def _async_leak_cleared(self, item: dict[str, Any]) -> None:
-        data = self.sensor_state(item["id"])
-        if not data.get("active"):
-            return
-        data["active"] = False
-        data["acknowledged"] = False
-        self._signal_update(item["id"])
-        await self._async_clear_notifications(item)
-        await self._async_send_email(item, recovery=True)
-        await self._async_save()
+        if changed:
+            self._signal_update(sensor_id)
+            await self._async_save()
 
     async def async_acknowledge(self, sensor_id: str) -> None:
-        """Acknowledge the current episode and stop email reminders."""
+        """Acknowledge the current leak episode and stop reminders."""
         item = self.sensor_config(sensor_id)
         if item is None:
             return
         data = self.sensor_state(sensor_id)
         if data.get("active") and not data.get("acknowledged"):
             data["acknowledged"] = True
-            # Reflect the acknowledgement immediately; persistence is secondary.
             self._signal_update(sensor_id)
             await self._async_save()
 
@@ -238,65 +334,141 @@ class WaterLeakCoordinator:
             self._signal_update(sensor_id)
             await self._async_save()
 
+    async def async_reset_to_dry(self, sensor_id: str) -> None:
+        """Publish dry to the actual MQTT state topic; state follows MQTT echo."""
+        item = self.sensor_config(sensor_id)
+        if item is None:
+            return
+        from homeassistant.components import mqtt
+
+        await mqtt.async_publish(
+            self.hass,
+            item["state_topic"],
+            "0",
+            qos=0,
+            retain=False,
+        )
+        _LOGGER.info("Published detect_wet=0 for Govee Water sensor %s", item["sensor_number"])
+
     async def async_test_notifications(self, sensor_id: str) -> None:
         """Send a test notification without changing leak state."""
         item = self.sensor_config(sensor_id)
         if item is None:
             return
-        title = f"Govee Water Leak Monitor: Test – {item['name']}"
-        message = f"This is a test notification for {item['name']}. No leak state was changed."
+        title = f"Govee Water Leak Monitor: Test – {item['device_name']}"
+        message = f"This is a test notification for {item['device_name']}. No leak state was changed."
         await self._async_send_email(item, title=title, message=message)
         await self._async_send_mobile(item, title, message)
 
+    async def _async_restore_wet(self, item: dict[str, Any]) -> None:
+        """Restore a sensor that is already wet when discovered or restarted."""
+        data = self.sensor_state(item["key"])
+        if data.get("active"):
+            return
+        now = dt_util.utcnow().isoformat()
+        data.update({
+            "active": True,
+            "acknowledged": False,
+            "last_wet": data.get("last_wet") or now,
+            "last_alert": data.get("last_alert") or now,
+        })
+        self._signal_update(item["key"])
+        await self._async_show_alert(item)
+        await self._async_save()
+
+    async def _async_leak_started(self, item: dict[str, Any]) -> None:
+        """Start one leak episode; repeated wet packets do not duplicate alerts."""
+        data = self.sensor_state(item["key"])
+        if data.get("active"):
+            return
+        now = dt_util.utcnow().isoformat()
+        data.update({
+            "active": True,
+            "acknowledged": False,
+            "last_wet": now,
+            "last_alert": now,
+        })
+        self._signal_update(item["key"])
+        await self._async_send_email(item, recovery=False)
+        await self._async_show_alert(item)
+        await self._async_save()
+
+    async def _async_leak_cleared(self, item: dict[str, Any]) -> None:
+        """End the current leak episode only after detect_wet reports dry."""
+        data = self.sensor_state(item["key"])
+        if not data.get("active"):
+            return
+        data["active"] = False
+        data["acknowledged"] = False
+        self._signal_update(item["key"])
+        await self._async_clear_notifications(item)
+        await self._async_send_email(item, recovery=True)
+        await self._async_save()
+
     async def _async_reminder_tick(self, now: datetime) -> None:
+        """Send reminders only while an unacknowledged leak episode is active."""
         for item in self.sensors:
-            data = self.sensor_state(item["id"])
-            current = self.hass.states.get(item[CONF_ENTITY_ID])
-            if data.get("active") and not data.get("acknowledged") and current and current.state == "on":
+            data = self.sensor_state(item["key"])
+            if data.get("active") and not data.get("acknowledged"):
                 await self._async_send_email(item, recovery=False)
 
+    @callback
+    def _async_mobile_action(self, event) -> None:
+        """Handle acknowledge actions from mobile notifications."""
+        action = event.data.get("action", "")
+        if not action.startswith("ACK_govee_water_leak_"):
+            return
+        notification_id = action.removeprefix("ACK_")
+        item = next((cfg for cfg in self.sensors if self._notification_id(cfg) == notification_id), None)
+        if item:
+            self.hass.async_create_task(self.async_acknowledge(item["key"]))
+
     def _sensor_context(self, item: dict[str, Any]) -> tuple[str, str, str]:
-        entity_id = item[CONF_ENTITY_ID]
-        state = self.hass.states.get(entity_id)
-        friendly = state.attributes.get("friendly_name", item["name"]) if state else item["name"]
-        area = self._area_for_entity(entity_id) or friendly
+        """Resolve the existing MQTT device's current name and assigned area."""
+        device = dr.async_get(self.hass).async_get(item["device_id"])
+        source_state = (
+            self.hass.states.get(item["source_entity_id"])
+            if item.get("source_entity_id") else None
+        )
+        friendly = (
+            (device.name_by_user if device else None)
+            or (source_state.attributes.get("friendly_name") if source_state else None)
+            or (device.name if device else None)
+            or item["device_name"]
+        )
+        area_name = None
+        area_id = device.area_id if device else None
+        if not area_id and item.get("source_entity_id"):
+            source_entry = er.async_get(self.hass).async_get(item["source_entity_id"])
+            area_id = source_entry.area_id if source_entry else None
+        if area_id:
+            area = ar.async_get(self.hass).async_get_area(area_id)
+            area_name = area.name if area else None
+        area = area_name or friendly
         home = self.hass.states.get("zone.home")
         home_name = home.attributes.get("friendly_name", "Home") if home else "Home"
         return str(area), str(friendly), str(home_name)
 
-    def _area_for_entity(self, entity_id: str) -> str | None:
-        entity_reg = er.async_get(self.hass)
-        entity = entity_reg.async_get(entity_id)
-        area_id = entity.area_id if entity else None
-        if not area_id and entity and entity.device_id:
-            device = dr.async_get(self.hass).async_get(entity.device_id)
-            area_id = device.area_id if device else None
-        if area_id:
-            area = ar.async_get(self.hass).async_get_area(area_id)
-            return area.name if area else None
-        return None
-
     def _notification_text(self, item: dict[str, Any]) -> tuple[str, str, str]:
         area, friendly, home = self._sensor_context(item)
-        data = self.sensor_state(item["id"])
-        last_wet = data.get("last_wet")
+        last_wet = self.sensor_state(item["key"]).get("last_wet")
         if last_wet:
-            try:
-                parsed = dt_util.parse_datetime(last_wet)
-                stamp = dt_util.as_local(parsed).strftime("%Y-%m-%d %H:%M:%S") if parsed else "Unknown"
-            except (TypeError, ValueError):
-                stamp = "Unknown"
+            parsed = dt_util.parse_datetime(last_wet)
+            stamp = dt_util.as_local(parsed).strftime("%Y-%m-%d %H:%M:%S") if parsed else "Unknown"
         else:
             stamp = "Unknown"
-        title = f"Water Leak: {home}: {area}"
-        message = f"Water detected in {area} by {friendly} @ {stamp}"
-        return title, message, area
+        return (
+            f"Water Leak: {home}: {area}",
+            f"Water detected in {area} by {friendly} @ {stamp}",
+            area,
+        )
 
-    async def _async_show_alert(self, item: dict[str, Any], startup: bool = False) -> None:
+    async def _async_show_alert(self, item: dict[str, Any]) -> None:
         title, message, _ = self._notification_text(item)
-        notification_id = self._notification_id(item)
         await self.hass.services.async_call("persistent_notification", "create", {
-            "notification_id": notification_id, "title": title, "message": message,
+            "notification_id": self._notification_id(item),
+            "title": title,
+            "message": message,
         }, blocking=True)
         await self._async_send_mobile(item, title, message)
 
@@ -308,7 +480,8 @@ class WaterLeakCoordinator:
             service = target.removeprefix("notify.")
             try:
                 await self.hass.services.async_call("notify", service, {
-                    "message": "clear_notification", "data": {"tag": self._notification_id(item)},
+                    "message": "clear_notification",
+                    "data": {"tag": self._notification_id(item)},
                 }, blocking=True)
             except HomeAssistantError:
                 _LOGGER.exception("Unable to clear mobile notification using %s", target)
@@ -334,25 +507,26 @@ class WaterLeakCoordinator:
                 _LOGGER.exception("Unable to send mobile notification using %s", target)
 
     async def _async_send_email(
-        self, item: dict[str, Any], recovery: bool = False, title: str | None = None, message: str | None = None
+        self,
+        item: dict[str, Any],
+        recovery: bool = False,
+        title: str | None = None,
+        message: str | None = None,
     ) -> None:
         if title is None or message is None:
             alert_title, alert_message, area = self._notification_text(item)
             if recovery:
-                data = self.sensor_state(item["id"])
-                last_wet = data.get("last_wet")
-                if last_wet:
-                    try:
-                        parsed = dt_util.parse_datetime(last_wet)
-                        last_wet = dt_util.as_local(parsed).strftime("%Y-%m-%d %H:%M:%S") if parsed else "Unknown"
-                    except (TypeError, ValueError):
-                        last_wet = "Unknown"
-                else:
-                    last_wet = "Unknown"
+                last_wet = self.sensor_state(item["key"]).get("last_wet")
+                parsed = dt_util.parse_datetime(last_wet) if last_wet else None
+                stamp = dt_util.as_local(parsed).strftime("%Y-%m-%d %H:%M:%S") if parsed else "Unknown"
                 title = f"Water Leak Alert Cleared: {self._sensor_context(item)[2]}: {area}"
-                message = f"Water leak alert cleared for {item['name']} in {area}. Water last detected @ {last_wet}"
+                message = (
+                    f"Water leak alert cleared for {item['device_name']} in {area}. "
+                    f"Water last detected @ {stamp}"
+                )
             else:
                 title, message = alert_title, alert_message
+
         for target in self._targets(CONF_EMAIL_TARGETS):
             try:
                 await self.hass.services.async_call(
@@ -365,6 +539,9 @@ class WaterLeakCoordinator:
             except HomeAssistantError:
                 _LOGGER.exception("Unable to send email using notify entity %s", target)
 
+    async def _async_save(self) -> None:
+        await self.store.async_save({"sensors": self.state})
+
     def _targets(self, option: str) -> list[str]:
         raw = self.options.get(option, []) or []
         if isinstance(raw, str):
@@ -373,12 +550,13 @@ class WaterLeakCoordinator:
 
     @staticmethod
     def _notification_id(item: dict[str, Any]) -> str:
-        return f"govee_water_leak_{item[CONF_ENTITY_ID].replace('.', '_')}"
-
-    async def _async_save(self) -> None:
-        await self.store.async_save({"sensors": self.state})
+        return f"govee_water_leak_{item['key']}"
 
     @callback
     def _signal_update(self, sensor_id: str) -> None:
         from homeassistant.helpers.dispatcher import async_dispatcher_send
-        async_dispatcher_send(self.hass, f"{SIGNAL_UPDATE}_{self.entry.entry_id}_{sensor_id}")
+
+        async_dispatcher_send(
+            self.hass,
+            f"{SIGNAL_UPDATE}_{self.entry.entry_id}_{sensor_id}",
+        )

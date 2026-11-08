@@ -1,44 +1,63 @@
 # Govee Water Leak Monitor
 
-A Home Assistant custom integration for monitoring existing Govee (and other compatible) water-leak `binary_sensor` entities. It replaces helper-heavy automations with GUI configuration and integration-owned persistent state.
+Home Assistant custom integration for Govee Water sensors decoded by [rtl_433](https://github.com/merbanan/rtl_433) and published through the Home Assistant MQTT integration.
 
 ## Features
 
-- Empty initial setup; add sensors through **Settings → Devices & services → Govee Water Leak Monitor → Configure**.
-- Entity picker is filtered to `binary_sensor` entities with the **Moisture** device class, which is Home Assistant's wet/dry classification for water leak sensors.
-- Optional MQTT topic per sensor refreshes the last-wet timestamp and updates an active alert without sending another initial email.
-- One HA device per configured sensor.
-- Initial email on a new leak episode; configurable periodic email reminders while wet and unacknowledged.
-- Selectable SMTP email notify entities and selectable registered `notify` services for mobile notifications.
-- Mobile notifications use a stable tag and include an Acknowledge action.
-- Acknowledgment suppresses email reminders only. Persistent/mobile notifications remain until recovery.
-- Recovery clears persistent/mobile notifications and sends a recovery email.
-- Active alerts are restored after restart without sending another initial email.
-- Last-wet time and acknowledgment are stored by the integration; no `input_boolean` or `input_datetime` helpers are created.
+- Automatically discovers rtl_433 `Govee-Water` devices from Home Assistant MQTT discovery.
+- Adds monitoring entities to the **existing rtl_433 MQTT device**. It does not create a separate device.
+- Uses the sensor's `detect_wet` MQTT topic as the authoritative wet/dry state.
+- Sends email, mobile, and persistent notifications when a new leak episode starts.
+- Suppresses duplicate alerts while rtl_433 repeats wet packets; a subsequent `detect_wet=0` ends the episode.
+- Provides Acknowledge, Reset Acknowledgment, Reset to Dry, and Test Notification buttons.
+- Reset to Dry publishes `0` to the sensor's actual `detect_wet` topic. The existing MQTT moisture entity and this integration then follow the MQTT state update.
+- Exposes battery voltage, the raw `battery_ok` decoder value, last battery report, last wet event, last alert, and last rtl_433 event.
+- Reads the existing MQTT device's current name and assigned area for notifications.
 
-## Install manually
+## Requirements
 
-Copy `custom_components/govee_water_leak_monitor` into `/config/custom_components/`, restart Home Assistant, then add **Govee Water Leak Monitor** under **Settings → Devices & services → Add integration**.
+- Home Assistant MQTT integration configured and running.
+- rtl_433 publishing MQTT messages in the standard topic structure:
 
-For HACS, publish this repository and add it as a custom integration repository. The manifest is prefilled for the `ctfo1/govee-water-leak-monitor` repository; change the owner or repository URLs if you choose a different GitHub location. The integration includes local `brand/icon.png`, `icon@2x.png`, and `logo.png` assets for Home Assistant branding.
+  ```text
+  rtl_433/<instance>/devices/Govee-Water/<sensor_id>/<field>
+  ```
 
-## Configure
+- Home Assistant MQTT discovery enabled for rtl_433. The moisture entity discovery config must identify the device as `manufacturer: rtl_433`, `model: Govee-Water`, and include its device identifier. For example:
 
-1. Open the integration's **Configure** menu.
-2. Set the reminder interval. Select one or more SMTP notify entities for email and one or more registered `notify` services for mobile alerts.
-3. Choose **Add water leak sensor**, give it a name, and select a binary sensor with device class **Moisture**.
-4. Optionally provide an MQTT topic and wet payload (default `1`) for repeated wet-event timestamps.
+  ```json
+  {
+    "state_topic": "rtl_433/your-instance/devices/Govee-Water/8098/detect_wet",
+    "unique_id": "Govee-Water-8098-moisture",
+    "device": {
+      "identifiers": ["Govee-Water-8098"],
+      "name": "Govee-Water-8098",
+      "model": "Govee-Water",
+      "manufacturer": "rtl_433"
+    }
+  }
+  ```
 
-The MQTT integration must be configured in Home Assistant if any sensor uses an MQTT topic. Without MQTT, leak start, reminders, acknowledgment, recovery, and startup restoration still work. The last-wet timestamp is set when the HA binary sensor transitions to wet.
+## Installation
 
-## Entities
+1. Install the `govee_water_leak_monitor` directory under `custom_components` (or install through HACS once the repository is published there).
+2. Restart Home Assistant.
+3. Add **Govee Water Leak Monitor** from Settings → Devices & services.
+4. Configure notification targets and reminder frequency in the integration options.
+5. Discovered sensors appear automatically as entities on their existing rtl_433 devices.
 
-Each configured sensor gets a leak-active binary sensor, acknowledgment diagnostic binary sensor, last-wet and last-alert timestamp sensors, plus Acknowledge Leak, Reset Acknowledgment, and Test Notification buttons. The integration references the original water-sensor entity; it does not create a duplicate wet/dry sensor.
+## MQTT fields used
 
-## Compatibility and migration
+| Field | Behavior |
+|---|---|
+| `detect_wet=1` | Starts a leak episode |
+| `detect_wet=0` | Clears the active leak episode |
+| `battery_mV` | Updates battery voltage |
+| `battery_ok` | Preserves the raw decoder value as a diagnostic |
+| `event` | Updates the last event diagnostic |
 
-Version 0.2.1 refreshes the branding with a simpler, solid-blue water-droplet icon. Version 0.2.0 changes the integration domain from `water_leak_alerts` to `govee_water_leak_monitor`. If you installed the earlier 0.1.0 test package, remove that integration and its old custom-component folder before installing this renamed version. The new domain does not automatically migrate the old config entry.
+The `event` field is informational only. Wet/dry state is determined exclusively by `detect_wet`, because rtl_433 publishes these fields as separate MQTT messages.
 
-## Development status
+## Device matching
 
-This is an early test release. Python syntax and package metadata should be validated before live use. Test on a backup or staging instance before relying on it for leak protection.
+The integration reads the identifiers from the rtl_433 MQTT discovery payload and looks up the corresponding Home Assistant device using the MQTT device-registry identifier. If it cannot find that existing device, it skips the sensor rather than creating a duplicate device.
