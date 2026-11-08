@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.9
+- Lovelace card now automatically displays all discovered Govee leak monitors, each in its own compact card section.
+- Removed the per-sensor selection requirement and retained individual acknowledgment and Reset to Dry controls.
+- Standardized sensor name, status, Water last detected, and battery text sizing/alignment.
+
 ## 0.3.8
 - Compact Lovelace card spacing to better match the original automation cards.
 - Align Wet/Dry and Water last detected on one baseline with a hyphen separator.

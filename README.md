@@ -44,18 +44,17 @@ Home Assistant custom integration for Govee Water sensors decoded by [rtl_433](h
 The integration includes a standalone Lovelace card (no Mushroom, stack-in-card, card-mod, or other custom-card dependencies). In the default storage-mode dashboard configuration, the integration serves and registers the card automatically. If Lovelace is configured in YAML mode, add this resource manually:
 
 ```yaml
-url: /govee_water_leak_monitor/govee-water-leak-card.js?v=0.3.7
+url: /govee_water_leak_monitor/govee-water-leak-card.js?v=0.3.9
 type: module
 ```
 
-Add one card per Govee sensor:
+Add a single card to display all discovered Govee leak monitors, each in its own compact section:
 
 ```yaml
 type: custom:govee-water-leak-card
-entity: binary_sensor.h5054_1_kitchen_sink_water_sensor
 ```
 
-The card displays the sensor name, wet/dry state, water-last-detected time (only after a wet report has been received), and battery level when known. While wet, it displays the acknowledgment and Reset to Dry controls. It intentionally omits Test Notification and diagnostic timestamp details. The card editor lets you select the source moisture sensor.
+The card displays the sensor name, wet/dry state, water-last-detected time (only after a wet report has been received), and battery level when known. While wet, it displays the acknowledgment and Reset to Dry controls. It intentionally omits Test Notification and diagnostic timestamp details. The card automatically discovers the integration-managed moisture sensors and their related battery, acknowledgment, and reset entities. No per-sensor selection is required.
 
 ## Entity behavior
 
