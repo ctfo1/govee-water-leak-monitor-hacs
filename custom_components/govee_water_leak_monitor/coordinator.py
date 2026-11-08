@@ -70,7 +70,7 @@ class WaterLeakCoordinator:
             "acknowledged": False,
             "last_wet": None,
             "leak_started": None,
-            "last_alert": None,
+            "last_notification": None,
             "last_battery_report": None,
             "last_event": None,
             "last_event_time": None,
@@ -78,6 +78,9 @@ class WaterLeakCoordinator:
         data = self.state.setdefault(sensor_id, {})
         for key, value in defaults.items():
             data.setdefault(key, value)
+        # Migrate the prior timestamp key without losing existing history.
+        if data.get("last_notification") is None and data.get("last_alert"):
+            data["last_notification"] = data["last_alert"]
         # Before v0.3.2, last_wet held the start of the episode. Preserve it
         # as the best available start time when upgrading an active leak.
         if data.get("active") and not data.get("leak_started"):
@@ -277,7 +280,7 @@ class WaterLeakCoordinator:
             elif source_state is not None and source_state.state == "off":
                 data = self.sensor_state(key)
                 if data.get("active"):
-                    data.update({"active": False, "acknowledged": False, "leak_started": None})
+                    data.update({"active": False, "acknowledged": False})
                     self._signal_update(key)
                     await self._async_clear_notifications(sensor)
                     await self._async_save()
@@ -370,8 +373,9 @@ class WaterLeakCoordinator:
             "active": True,
             "acknowledged": False,
             "last_wet": data.get("last_wet") or now,
-            "leak_started": data.get("leak_started") or now,
-            "last_alert": data.get("last_alert") or now,
+            # This is a newly observed wet episode; the actual start may have
+            # occurred while HA was offline, so use the discovery time.
+            "leak_started": now,
         })
         self._signal_update(item["key"])
         await self._async_show_alert(item)
@@ -390,7 +394,6 @@ class WaterLeakCoordinator:
             "active": True,
             "acknowledged": False,
             "leak_started": now,
-            "last_alert": now,
         })
         self._signal_update(item["key"])
         await self._async_send_email(item, recovery=False)
@@ -404,7 +407,6 @@ class WaterLeakCoordinator:
             return
         data["active"] = False
         data["acknowledged"] = False
-        data["leak_started"] = None
         self._signal_update(item["key"])
         await self._async_clear_notifications(item)
         await self._async_send_email(item, recovery=True)
@@ -517,6 +519,7 @@ class WaterLeakCoordinator:
             "title": title,
             "message": message,
         }, blocking=True)
+        await self._async_record_notification(item)
         await self._async_send_mobile(item, title, message)
 
     async def _async_clear_notifications(self, item: dict[str, Any]) -> None:
@@ -550,6 +553,7 @@ class WaterLeakCoordinator:
                         }],
                     },
                 }, blocking=True)
+                await self._async_record_notification(item)
             except HomeAssistantError:
                 _LOGGER.exception("Unable to send mobile notification using %s", target)
 
@@ -588,8 +592,16 @@ class WaterLeakCoordinator:
                     target={"entity_id": target},
                     blocking=True,
                 )
+                await self._async_record_notification(item)
             except HomeAssistantError:
                 _LOGGER.exception("Unable to send email using notify entity %s", target)
+
+    async def _async_record_notification(self, item: dict[str, Any]) -> None:
+        """Persist the time of the most recent successfully sent notification."""
+        data = self.sensor_state(item["key"])
+        data["last_notification"] = dt_util.utcnow().isoformat()
+        self._signal_update(item["key"])
+        await self._async_save()
 
     async def _async_save(self) -> None:
         await self.store.async_save({"sensors": self.state})

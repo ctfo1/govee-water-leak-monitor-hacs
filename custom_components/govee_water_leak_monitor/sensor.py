@@ -19,7 +19,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 LastBatteryReportSensor(coordinator, config),
                 LastWetSensor(coordinator, config),
                 LeakStartedSensor(coordinator, config),
-                LastAlertSensor(coordinator, config),
+                LastNotificationSensor(coordinator, config),
                 LastEventSensor(coordinator, config),
             ))
         return entities
@@ -53,12 +53,17 @@ class LastWetSensor(_TimestampSensor):
 
 class LeakStartedSensor(_TimestampSensor):
     def __init__(self, coordinator, config):
-        super().__init__(coordinator, config, "Leak Started", "leak_started")
+        super().__init__(coordinator, config, "Last Leak Started", "leak_started")
+        # Keep the existing unique ID so the entity registry/history survive
+        # the display-name change.
+        self._attr_unique_id = f"{self.sensor_id}_leak_started"
 
 
-class LastAlertSensor(_TimestampSensor):
+class LastNotificationSensor(_TimestampSensor):
     def __init__(self, coordinator, config):
-        super().__init__(coordinator, config, "Last Alert", "last_alert")
+        super().__init__(coordinator, config, "Last Notification", "last_notification")
+        # Preserve the existing unique ID across the display-name change.
+        self._attr_unique_id = f"{self.sensor_id}_last_alert"
 
 
 class LastEventSensor(WaterLeakEntity, SensorEntity):

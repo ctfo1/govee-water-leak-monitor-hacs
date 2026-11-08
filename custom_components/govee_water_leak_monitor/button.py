@@ -29,7 +29,10 @@ class ResetToDryButton(WaterLeakEntity, ButtonEntity):
 
     @property
     def available(self) -> bool:
-        return self.device_available and bool(self.coordinator.sensor_state(self.sensor_id).get("active"))
+        # Keep the command available even while the rtl_433 device is absent.
+        # The coordinator retains the topic/configuration and MQTT publish
+        # failures are handled by Home Assistant's service layer.
+        return True
 
     async def async_press(self):
         await self.coordinator.async_reset_to_dry(self.sensor_id)

@@ -1,25 +1,27 @@
 # Changelog
 
-## 0.3.2
+## 0.3.3
+- Renamed Last Alert to Last Notification and update it whenever an integration notification is successfully sent.
+- Renamed Leak Started to Last Leak Started; retain its timestamp after the sensor reports dry, replacing it only when a new leak episode starts.
+- Preserve existing entity registry IDs and migrate the prior Last Alert timestamp so existing entity history and stored data are retained.
 
-- Replaced the separate Acknowledge Leak and Reset Acknowledgment buttons with one Leak Acknowledged switch. Turning it on acknowledges the active episode; turning it off re-enables reminders. Acknowledgment resets automatically when the sensor reports dry.
-- Removed Leak Alert Active; the existing rtl_433 moisture binary sensor remains the authoritative wet/dry state.
-- Last Wet Event now updates on every `detect_wet=1` report, including repeated reports during an ongoing leak.
-- Added Leak Started to record the beginning of the current continuous leak episode; it clears when the sensor reports dry.
-- Retained Last Battery Report and timestamp it from the rtl_433 `event=Battery Report` message.
-- Removed duplicate Battery Voltage and Battery OK entities because rtl_433 already supplies battery measurements.
-- Removed obsolete v0.3.0/v0.3.1 entities from the entity registry during upgrade.
-- Preserved the v0.3.1 device-association, notification formatting, and deleted-device recovery behavior.
 
 ## 0.3.1
 
-- Fixed device association: monitor entities are linked directly to the existing rtl_433 MQTT device instead of registering a second device.
+- Fixed device association: monitor entities are now linked directly to the existing rtl_433 MQTT device instead of registering a second device. This accounts for Home Assistant scoping device identifiers to config entries.
 - Migrates existing v0.3.0 monitor entities onto their corresponding MQTT devices and removes empty duplicate monitor devices owned by this integration.
-- If an MQTT device is deleted, monitor entities become unavailable without creating a replacement device. Rediscovery reattaches existing entities while preserving monitor state and settings.
-- Moved action buttons into Controls and fixed notifications for devices without an assigned area.
+- If an MQTT device is deleted, monitor entities become unavailable without creating a replacement device. Rediscovery of the same sensor reattaches existing entities to the newly registered MQTT device while preserving monitor state and settings.
+- Moved all four action buttons into the Controls group; none are classified as Configuration entities.
+- Fixed notifications for devices without an assigned area: the device name is shown once and the message no longer contains a fabricated location.
+- Test and recovery notifications now resolve the current device name dynamically.
 
 ## 0.3.0
 
 - Replaced manual moisture-entity setup with automatic rtl_433 Govee Water MQTT discovery.
-- Uses `detect_wet` as the authoritative wet/dry state and publishes `0` to that topic for Reset to Dry.
-- Preserves notification targets, reminder interval, acknowledgment, and test notification behavior.
+- Matched discovered sensors to the existing MQTT device using the rtl_433 discovery device identifier; no separate device is created by this integration.
+- Switched leak state to the `detect_wet` MQTT field (`1` wet, `0` dry).
+- Changed Reset to Dry to publish `0` to the sensor's real MQTT state topic, allowing the existing MQTT moisture entity to update too.
+- Prevented repeated wet packets from starting duplicate leak episodes or duplicate notifications.
+- Added battery voltage, raw battery_ok, last battery report, and last rtl_433 event diagnostics.
+- Preserved notification targets, reminder interval, acknowledgment, and test notification behavior.
+- Migrates existing v0.2.x config entries and retains their notification settings while discarding manual sensor selections.

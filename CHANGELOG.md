@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3
+- Renamed Last Alert to Last Notification and update it whenever an integration notification is successfully sent.
+- Renamed Leak Started to Last Leak Started; retain its timestamp after the sensor reports dry, replacing it only when a new leak episode starts.
+- Preserve existing entity registry IDs and migrate the prior Last Alert timestamp so existing entity history and stored data are retained.
+
+
 ## 0.3.1
 
 - Fixed device association: monitor entities are now linked directly to the existing rtl_433 MQTT device instead of registering a second device. This accounts for Home Assistant scoping device identifiers to config entries.
