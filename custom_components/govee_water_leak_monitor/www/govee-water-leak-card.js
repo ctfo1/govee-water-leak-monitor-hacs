@@ -110,7 +110,14 @@ class GoveeWaterLeakCard extends HTMLElement {
       : value <= 70 ? "mdi:battery-70" : value <= 80 ? "mdi:battery-80"
       : value <= 90 ? "mdi:battery-90" : "mdi:battery";
     const unit = batteryState.attributes.unit_of_measurement || "%";
-    return `<div class="battery"><ha-icon icon="${icon}"></ha-icon><span>${this._escape(batteryState.state)}${this._escape(unit)}</span></div>`;
+    const reportEntity = this._entityFor(sourceId, "last_battery_report", ["last battery report"], "sensor");
+    const reportState = reportEntity && this._hass.states[reportEntity];
+    const reportValue = reportState && !["unknown", "unavailable", "none"].includes(reportState.state)
+      ? reportState.state : undefined;
+    const reportDate = reportValue ? new Date(reportValue) : undefined;
+    const tooltip = reportDate && !Number.isNaN(reportDate.getTime())
+      ? ` title="${this._escape(`Last battery update: ${reportDate.toLocaleString()}`)}"` : "";
+    return `<div class="battery"${tooltip}><ha-icon icon="${icon}"></ha-icon><span>${this._escape(batteryState.state)}${this._escape(unit)}</span></div>`;
   }
 
   _cardMarkup(sourceId) {
@@ -158,8 +165,8 @@ class GoveeWaterLeakCard extends HTMLElement {
         .status-line{display:flex;align-items:baseline;flex-wrap:wrap;margin-top:2px;line-height:1.25;font-size:14px}
         .status{font-size:14px;line-height:1.25;color:var(--secondary-text-color)}.wet-text{color:var(--error-color)}
         .wet-time{font-size:14px;line-height:1.25;color:var(--secondary-text-color);margin-left:6px}.wet-time:before{content:"-";margin-right:6px}
-        .battery{display:flex;align-items:center;justify-content:center;gap:4px;font-size:14px;line-height:1;color:var(--primary-text-color);white-space:nowrap;align-self:center}
-        .battery ha-icon{--mdc-icon-size:18px;display:block;flex:0 0 auto}.battery span{display:flex;align-items:center;line-height:1;min-height:18px}
+        .battery{display:flex;align-items:center;justify-content:center;gap:4px;font-size:12px;line-height:1;color:var(--primary-text-color);white-space:nowrap;align-self:center}
+        .battery ha-icon{--mdc-icon-size:18px;display:block;flex:0 0 auto}.battery span{display:flex;align-items:center;font-size:12px;line-height:1;min-height:18px}
         .controls{display:flex;gap:8px;justify-content:flex-end;margin-top:8px;flex-wrap:wrap}
         .controls button{display:inline-flex;align-items:center;gap:6px;border:0;border-radius:18px;padding:6px 11px;background:var(--secondary-background-color);color:var(--primary-text-color);font:inherit;font-size:12px;line-height:1.2;cursor:pointer}
         .controls button ha-icon{--mdc-icon-size:16px}.ack.active{color:var(--error-color)}.ack.acknowledged{color:var(--warning-color)}

@@ -1,3 +1,11 @@
+## 0.3.10
+
+- Refresh persistent and mobile leak alerts at each reminder using the latest wet-detection timestamp; dismissed mobile alerts return until acknowledged.
+- Synchronize mobile notification acknowledgment with the Leak Acknowledged switch and clear active notifications when acknowledged.
+- Retain the Reset to Dry MQTT state publication so a stale retained wet value is replaced across Home Assistant restarts.
+- Add a battery last-report timestamp tooltip when a valid report time exists, and reduce the battery percentage text size.
+- Standardize the Last Leak Started entity ID to `sensor.govee_water_leak_monitor_[device_name]_leak_started` while preserving its unique ID.
+
 # Changelog
 
 ## 0.3.9

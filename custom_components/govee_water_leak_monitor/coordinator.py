@@ -331,6 +331,11 @@ class WaterLeakCoordinator:
             data["acknowledged"] = desired
             self._signal_update(sensor_id)
             await self._async_save()
+            # Keep the mobile and persistent alerts in sync with the shared
+            # acknowledgment switch. Dismissing a notification without using
+            # its Acknowledge action does not change this state.
+            if desired:
+                await self._async_clear_notifications(self.sensor_config(sensor_id))
 
     async def async_acknowledge(self, sensor_id: str) -> None:
         """Acknowledge the current leak episode (mobile notification action)."""
@@ -348,7 +353,9 @@ class WaterLeakCoordinator:
             item["state_topic"],
             "0",
             qos=0,
-            retain=False,
+            # Replace any retained wet state so HA does not restore stale
+            # detect_wet=1 after a restart. Real rtl_433 reports still win.
+            retain=True,
         )
         _LOGGER.info("Published detect_wet=0 for Govee Water sensor %s", item["sensor_number"])
 
@@ -417,6 +424,10 @@ class WaterLeakCoordinator:
         for item in self.sensors:
             data = self.sensor_state(item["key"])
             if data.get("active") and not data.get("acknowledged"):
+                # Re-create/update both alert surfaces on every reminder. This
+                # refreshes the last-detected timestamp and restores a mobile
+                # notification that was dismissed without acknowledging it.
+                await self._async_show_alert(item)
                 await self._async_send_email(item, recovery=False)
 
     @callback

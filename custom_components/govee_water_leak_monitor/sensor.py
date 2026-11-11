@@ -1,11 +1,16 @@
 """Diagnostic sensors for discovered Govee water sensors."""
 from __future__ import annotations
 
+import logging
+
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import EntityCategory
-from homeassistant.util import dt as dt_util
+from homeassistant.util import dt as dt_util, slugify
 
 from .entity import WaterLeakEntity
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -54,9 +59,37 @@ class LastWetSensor(_TimestampSensor):
 class LeakStartedSensor(_TimestampSensor):
     def __init__(self, coordinator, config):
         super().__init__(coordinator, config, "Last Leak Started", "leak_started")
-        # Keep the existing unique ID so the entity registry/history survive
-        # the display-name change.
+        # Preserve the existing unique ID so HA keeps the entity registry row
+        # and history while giving automation-facing IDs a stable prefix.
         self._attr_unique_id = f"{self.sensor_id}_leak_started"
+        device_name = config.get("device_name") or config.get("sensor_number") or self.sensor_id
+        self._attr_suggested_object_id = (
+            f"govee_water_leak_monitor_{slugify(device_name)}_leak_started"
+        )
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        registry = er.async_get(self.hass)
+        entry = registry.async_get(self.entity_id)
+        if entry is None:
+            return
+        target_entity_id = (
+            f"sensor.govee_water_leak_monitor_"
+            f"{slugify(self.sensor_config.get('device_name') or self.sensor_id)}_leak_started"
+        )
+        if entry.entity_id == target_entity_id:
+            return
+        try:
+            registry.async_update_entity(
+                entry.entity_id, new_entity_id=target_entity_id
+            )
+        except ValueError:
+            # Do not prevent the integration from loading if another entity
+            # already owns the requested object ID.
+            _LOGGER.warning(
+                "Could not migrate %s to %s because that entity ID is already in use",
+                entry.entity_id, target_entity_id,
+            )
 
 
 class LastNotificationSensor(_TimestampSensor):
