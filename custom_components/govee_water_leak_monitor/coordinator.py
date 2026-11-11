@@ -295,10 +295,26 @@ class WaterLeakCoordinator:
         key = self._by_source.get((instance_id, sensor_number))
         if key is None:
             return
-        self.hass.async_create_task(self._async_process_sensor_field(key, field, message.payload))
+        self.hass.async_create_task(
+            self._async_process_sensor_field(
+                key,
+                field,
+                message.payload,
+                retained=bool(getattr(message, "retain", False)),
+            )
+        )
 
-    async def _async_process_sensor_field(self, sensor_id: str, field: str, payload: str) -> None:
-        """Process wet-state and event fields independently."""
+    async def _async_process_sensor_field(
+        self, sensor_id: str, field: str, payload: str, retained: bool = False
+    ) -> None:
+        """Process wet-state and event fields independently.
+
+        Retained event messages describe the last event before the MQTT
+        subscriber connected; they are not new reports and must not refresh
+        event timestamps (especially Last Battery Report) at HA startup.
+        Retained detect_wet messages are still processed as the authoritative
+        current wet/dry state.
+        """
         item = self.sensor_config(sensor_id)
         if item is None:
             return
@@ -313,6 +329,8 @@ class WaterLeakCoordinator:
             return
 
         if field == "event":
+            if retained:
+                return
             now = dt_util.utcnow().isoformat()
             data["last_event"] = value
             data["last_event_time"] = now

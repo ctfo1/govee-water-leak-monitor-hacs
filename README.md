@@ -44,7 +44,7 @@ Home Assistant custom integration for Govee Water sensors decoded by [rtl_433](h
 The integration includes a standalone Lovelace card (no Mushroom, stack-in-card, card-mod, or other custom-card dependencies). In the default storage-mode dashboard configuration, the integration serves and registers the card automatically. If Lovelace is configured in YAML mode, add this resource manually:
 
 ```yaml
-url: /govee_water_leak_monitor/govee-water-leak-card.js?v=0.3.10
+url: /govee_water_leak_monitor/govee-water-leak-card.js?v=0.3.11
 type: module
 ```
 

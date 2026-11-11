@@ -1,3 +1,7 @@
+## 0.3.11
+
+- Do not treat retained rtl_433 event messages replayed at MQTT reconnect as new events; preserve the actual Last Battery Report time across HA restarts. Retained wet/dry state messages continue to be processed.
+
 ## 0.3.10
 
 - Refresh persistent and mobile leak alerts at each reminder using the latest wet-detection timestamp; dismissed mobile alerts return until acknowledged.
