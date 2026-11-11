@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from homeassistant.core import HomeAssistant, callback
@@ -48,6 +48,11 @@ class WaterLeakCoordinator:
         self.state: dict[str, dict[str, Any]] = {}
         self.discovered: dict[str, dict[str, Any]] = {}
         self._by_source: dict[tuple[str, str], str] = {}
+        # rtl_433 publishes each decoded field on a sibling MQTT topic. Cache
+        # the per-record time field so event/state fields can use the decoder's
+        # timestamp instead of HA's message-reception time.
+        self._mqtt_time_cache: dict[str, tuple[datetime, datetime]] = {}
+        self._pending_timestamp_updates: dict[str, tuple[set[str], datetime]] = {}
         self._entity_adders: dict[str, tuple[Callable, Callable]] = {}
         self._mqtt_unsubs: list[Callable] = []
         self._discovery_prefixes: set[str] = {"homeassistant"}
@@ -296,46 +301,107 @@ class WaterLeakCoordinator:
         if key is None:
             return
         self.hass.async_create_task(
-            self._async_process_sensor_field(
-                key,
-                field,
-                message.payload,
-                retained=bool(getattr(message, "retain", False)),
-            )
+            self._async_process_sensor_field(key, field, message.payload)
         )
 
-    async def _async_process_sensor_field(
-        self, sensor_id: str, field: str, payload: str, retained: bool = False
-    ) -> None:
-        """Process wet-state and event fields independently.
+    def _parse_mqtt_time(self, value: str) -> datetime | None:
+        """Parse rtl_433's time field into an aware UTC datetime.
 
-        Retained event messages describe the last event before the MQTT
-        subscriber connected; they are not new reports and must not refresh
-        event timestamps (especially Last Battery Report) at HA startup.
-        Retained detect_wet messages are still processed as the authoritative
-        current wet/dry state.
+        rtl_433 can emit epoch seconds or an ISO-like wall-clock timestamp.
+        Naive wall-clock values are interpreted in Home Assistant's configured
+        timezone; timestamps with an explicit offset retain that offset.
+        """
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            # rtl_433's time:unix format is epoch seconds.
+            if re.fullmatch(r"\d+(?:\.\d+)?", text):
+                return datetime.fromtimestamp(float(text), tz=timezone.utc)
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                local_tz = dt_util.get_time_zone(self.hass.config.time_zone) or timezone.utc
+                parsed = parsed.replace(tzinfo=local_tz)
+            return parsed.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError):
+            _LOGGER.debug("Ignoring invalid rtl_433 time value %r", value)
+            return None
+
+    def _event_timestamp(self, sensor_id: str, now: datetime) -> tuple[str, bool]:
+        """Return a recent rtl_433 time value, or HA reception time as fallback.
+
+        The short freshness window prevents a prior record's cached time from
+        being reused when a later record has no time field.
+        """
+        cached = self._mqtt_time_cache.get(sensor_id)
+        if cached and now - cached[1] <= timedelta(seconds=5):
+            return cached[0].isoformat(), False
+        return now.isoformat(), True
+
+    def _mark_timestamp_pending(self, sensor_id: str, keys: set[str], now: datetime) -> None:
+        """Allow a time field arriving just after its data field to correct it."""
+        pending = self._pending_timestamp_updates.get(sensor_id)
+        if pending and now - pending[1] <= timedelta(seconds=5):
+            pending[0].update(keys)
+            self._pending_timestamp_updates[sensor_id] = (pending[0], now)
+        else:
+            self._pending_timestamp_updates[sensor_id] = (set(keys), now)
+
+    async def _async_process_sensor_field(
+        self, sensor_id: str, field: str, payload: str
+    ) -> None:
+        """Process every MQTT field, including retained events.
+
+        detect_wet remains authoritative for current Wet/Dry state. Event
+        messages update history only and never independently change leak state.
+        MQTT retain flags are deliberately not used to filter event history.
         """
         item = self.sensor_config(sensor_id)
         if item is None:
             return
         data = self.sensor_state(sensor_id)
         value = str(payload).strip()
+        now = dt_util.utcnow()
+
+        if field == "time":
+            parsed_time = self._parse_mqtt_time(value)
+            if parsed_time is None:
+                return
+            self._mqtt_time_cache[sensor_id] = (parsed_time, now)
+            pending = self._pending_timestamp_updates.pop(sensor_id, None)
+            if pending and now - pending[1] <= timedelta(seconds=5):
+                stamp = parsed_time.isoformat()
+                for key in pending[0]:
+                    data[key] = stamp
+                self._signal_update(sensor_id)
+                await self._async_save()
+            return
 
         if field == "detect_wet":
             if value in {"1", "true", "True"}:
-                await self._async_leak_started(item)
+                stamp, needs_correction = self._event_timestamp(sensor_id, now)
+                await self._async_leak_started(item, stamp)
+                if needs_correction:
+                    self._mark_timestamp_pending(sensor_id, {"last_wet"}, now)
             elif value in {"0", "false", "False"}:
                 await self._async_leak_cleared(item)
             return
 
         if field == "event":
-            if retained:
+            # Reset-to-Dry writes its own event timestamp to persistent state
+            # before publishing. Preserve that timestamp when the broker echoes
+            # or replays the retained HA-originated event.
+            if value.casefold() == "ha button press" and data.get("last_event") == value and data.get("last_event_time"):
                 return
-            now = dt_util.utcnow().isoformat()
+            stamp, needs_correction = self._event_timestamp(sensor_id, now)
             data["last_event"] = value
-            data["last_event_time"] = now
+            data["last_event_time"] = stamp
+            pending_keys = {"last_event_time"}
             if value.casefold() == "battery report":
-                data["last_battery_report"] = now
+                data["last_battery_report"] = stamp
+                pending_keys.add("last_battery_report")
+            if needs_correction:
+                self._mark_timestamp_pending(sensor_id, pending_keys, now)
             self._signal_update(sensor_id)
             await self._async_save()
 
@@ -360,11 +426,20 @@ class WaterLeakCoordinator:
         await self.async_set_acknowledged(sensor_id, True)
 
     async def async_reset_to_dry(self, sensor_id: str) -> None:
-        """Publish dry to the actual MQTT state topic; state follows MQTT echo."""
+        """Publish a retained dry state and HA-originated reset event."""
         item = self.sensor_config(sensor_id)
         if item is None:
             return
         from homeassistant.components import mqtt
+
+        # Persist the event timestamp before publishing. That preserves the
+        # original HA reset time when the retained event is replayed later.
+        now = dt_util.utcnow().isoformat()
+        data = self.sensor_state(sensor_id)
+        data["last_event"] = "HA Button Press"
+        data["last_event_time"] = now
+        self._signal_update(sensor_id)
+        await self._async_save()
 
         await mqtt.async_publish(
             self.hass,
@@ -375,7 +450,17 @@ class WaterLeakCoordinator:
             # detect_wet=1 after a restart. Real rtl_433 reports still win.
             retain=True,
         )
-        _LOGGER.info("Published detect_wet=0 for Govee Water sensor %s", item["sensor_number"])
+        await mqtt.async_publish(
+            self.hass,
+            f"{item['base_topic']}/event",
+            "HA Button Press",
+            qos=0,
+            retain=True,
+        )
+        _LOGGER.info(
+            "Published detect_wet=0 and event=HA Button Press for Govee Water sensor %s",
+            item["sensor_number"],
+        )
 
     async def async_test_notifications(self, sensor_id: str) -> None:
         """Send a test notification without changing leak state."""
@@ -406,10 +491,10 @@ class WaterLeakCoordinator:
         await self._async_show_alert(item)
         await self._async_save()
 
-    async def _async_leak_started(self, item: dict[str, Any]) -> None:
+    async def _async_leak_started(self, item: dict[str, Any], event_time: str | None = None) -> None:
         """Record every wet report but start/alert only once per episode."""
         data = self.sensor_state(item["key"])
-        now = dt_util.utcnow().isoformat()
+        now = event_time or dt_util.utcnow().isoformat()
         data["last_wet"] = now
         if data.get("active"):
             self._signal_update(item["key"])

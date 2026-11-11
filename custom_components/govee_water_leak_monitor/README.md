@@ -12,6 +12,6 @@ The aggregate card is `custom:govee-water-leak-card`. Add one card to display ev
 type: custom:govee-water-leak-card
 ```
 
-The card displays wet/dry status, the last-detected time when known, and battery level when available. It shows acknowledgment and Reset to Dry controls while wet. It does not display Test Notification, Last Leak Started, Last Battery Report, or Last Notification.
+The card displays the existing rtl_433 device name (without the moisture entity's trailing “Water Sensor” label), wet/dry status, the last-detected time when known, and battery level when available. It shows acknowledgment and Reset to Dry controls while wet. It does not display Test Notification, Last Leak Started, Last Battery Report, or Last Notification.
 
 The card automatically discovers integration-managed moisture sensors and their related battery, acknowledgment, and Reset to Dry entities. No per-sensor selection is required.

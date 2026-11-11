@@ -1,3 +1,10 @@
+## 0.3.12
+
+- Display the existing rtl_433 device name in the Lovelace card instead of appending the moisture entity label "Water Sensor".
+- Process retained and live `event` messages; use the rtl_433 MQTT `time` field for event and wet-report timestamps, with HA reception time as a fallback.
+- Keep `detect_wet` as the sole authority for current Wet/Dry state; event messages update history only.
+- Reset to Dry publishes retained `detect_wet=0` and retained `event=HA Button Press`.
+
 ## 0.3.11
 
 - Do not treat retained rtl_433 event messages replayed at MQTT reconnect as new events; preserve the actual Last Battery Report time across HA restarts. Retained wet/dry state messages continue to be processed.

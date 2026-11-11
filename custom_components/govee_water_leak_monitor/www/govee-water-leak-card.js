@@ -63,6 +63,16 @@ class GoveeWaterLeakCard extends HTMLElement {
       });
   }
 
+  _deviceTitle(sourceId) {
+    const entity = this._hass.entities?.[sourceId];
+    const deviceId = entity?.device_id;
+    const device = deviceId && this._hass.devices?.[deviceId];
+    const deviceName = device?.name_by_user || device?.name;
+    if (deviceName) return deviceName;
+    const friendly = this._hass.states[sourceId]?.attributes?.friendly_name || sourceId;
+    return String(friendly).replace(/\s+Water Sensor$/i, "").trim() || friendly;
+  }
+
   _relative(value) {
     if (!value) return "Never";
     const date = new Date(value);
@@ -124,7 +134,7 @@ class GoveeWaterLeakCard extends HTMLElement {
     const state = this._hass.states[sourceId];
     const wet = state.state === "on";
     const available = !["unavailable", "unknown"].includes(state.state);
-    const title = state.attributes.friendly_name || sourceId;
+    const title = this._deviceTitle(sourceId);
     const ack = this._entityFor(sourceId, "acknowledged", ["leak acknowledged", "acknowledged"], "switch");
     const reset = this._entityFor(sourceId, "reset_button", ["reset to dry"], "button");
     const lastWet = this._entityFor(sourceId, "last_wet_event", ["last wet event"], "sensor");
