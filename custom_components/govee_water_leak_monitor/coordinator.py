@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from homeassistant.core import HomeAssistant, callback
@@ -48,11 +48,15 @@ class WaterLeakCoordinator:
         self.state: dict[str, dict[str, Any]] = {}
         self.discovered: dict[str, dict[str, Any]] = {}
         self._by_source: dict[tuple[str, str], str] = {}
-        # rtl_433 publishes each decoded field on a sibling MQTT topic. Cache
-        # the per-record time field so event/state fields can use the decoder's
-        # timestamp instead of HA's message-reception time.
-        self._mqtt_time_cache: dict[str, tuple[datetime, datetime]] = {}
-        self._pending_timestamp_updates: dict[str, tuple[set[str], datetime]] = {}
+        # MQTT callbacks enqueue fields synchronously; one worker per sensor
+        # applies them in arrival order so slow side effects cannot reorder state.
+        self._message_queues: dict[str, asyncio.Queue] = {}
+        self._message_workers: dict[str, asyncio.Task] = {}
+        # Notification work is serialized separately from state processing.
+        self._notification_queues: dict[str, asyncio.Queue] = {}
+        self._notification_workers: dict[str, asyncio.Task] = {}
+        self._episode_generation: dict[str, int] = {}
+        self._shutting_down = False
         self._entity_adders: dict[str, tuple[Callable, Callable]] = {}
         self._mqtt_unsubs: list[Callable] = []
         self._discovery_prefixes: set[str] = {"homeassistant"}
@@ -155,6 +159,14 @@ class WaterLeakCoordinator:
         for unsubscribe in self._mqtt_unsubs:
             unsubscribe()
         self._mqtt_unsubs.clear()
+        self._shutting_down = True
+        workers = list(self._message_workers.values()) + list(self._notification_workers.values())
+        for worker in workers:
+            worker.cancel()
+        if workers:
+            await asyncio.gather(*workers, return_exceptions=True)
+        self._message_workers.clear()
+        self._notification_workers.clear()
 
     @callback
     def _async_discovery_message(self, message) -> None:
@@ -283,16 +295,11 @@ class WaterLeakCoordinator:
             if source_state is not None and source_state.state == "on":
                 await self._async_restore_wet(sensor)
             elif source_state is not None and source_state.state == "off":
-                data = self.sensor_state(key)
-                if data.get("active"):
-                    data.update({"active": False, "acknowledged": False})
-                    self._signal_update(key)
-                    await self._async_clear_notifications(sensor)
-                    await self._async_save()
+                await self._async_restore_dry(sensor)
 
     @callback
     def _async_rtl433_message(self, message) -> None:
-        """Handle a single field published by rtl_433."""
+        """Queue MQTT fields in callback-arrival order for their sensor."""
         match = _RTL433_TOPIC_RE.match(message.topic)
         if not match:
             return
@@ -300,108 +307,171 @@ class WaterLeakCoordinator:
         key = self._by_source.get((instance_id, sensor_number))
         if key is None:
             return
-        self.hass.async_create_task(
-            self._async_process_sensor_field(key, field, message.payload)
-        )
 
-    def _parse_mqtt_time(self, value: str) -> datetime | None:
-        """Parse rtl_433's time field into an aware UTC datetime.
+        queue = self._message_queues.setdefault(key, asyncio.Queue())
+        queue.put_nowait((
+            field,
+            message.payload,
+            bool(getattr(message, "retain", False)),
+            dt_util.utcnow().isoformat(),
+        ))
+        worker = self._message_workers.get(key)
+        if worker is None or worker.done():
+            self._message_workers[key] = self.hass.async_create_task(
+                self._async_process_sensor_queue(key)
+            )
 
-        rtl_433 can emit epoch seconds or an ISO-like wall-clock timestamp.
-        Naive wall-clock values are interpreted in Home Assistant's configured
-        timezone; timestamps with an explicit offset retain that offset.
-        """
-        text = str(value).strip()
-        if not text:
-            return None
+    async def _async_process_sensor_queue(self, sensor_id: str) -> None:
+        """Apply a sensor's MQTT fields sequentially in arrival order."""
+        queue = self._message_queues[sensor_id]
         try:
-            # rtl_433's time:unix format is epoch seconds.
-            if re.fullmatch(r"\d+(?:\.\d+)?", text):
-                return datetime.fromtimestamp(float(text), tz=timezone.utc)
-            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                local_tz = dt_util.get_time_zone(self.hass.config.time_zone) or timezone.utc
-                parsed = parsed.replace(tzinfo=local_tz)
-            return parsed.astimezone(timezone.utc)
-        except (TypeError, ValueError, OverflowError, OSError):
-            _LOGGER.debug("Ignoring invalid rtl_433 time value %r", value)
-            return None
+            while not queue.empty():
+                field, payload, retained, received_at = queue.get_nowait()
+                try:
+                    await self._async_process_sensor_field(
+                        sensor_id, field, payload, retained, received_at
+                    )
+                except Exception:
+                    _LOGGER.exception(
+                        "Error processing rtl_433 field %s for sensor %s", field, sensor_id
+                    )
+                finally:
+                    queue.task_done()
+        finally:
+            self._message_workers.pop(sensor_id, None)
+            if not self._shutting_down and not queue.empty():
+                self._message_workers[sensor_id] = self.hass.async_create_task(
+                    self._async_process_sensor_queue(sensor_id)
+                )
 
-    def _event_timestamp(self, sensor_id: str, now: datetime) -> tuple[str, bool]:
-        """Return a recent rtl_433 time value, or HA reception time as fallback.
+    @callback
+    def _next_episode_generation(self, sensor_id: str) -> int:
+        generation = self._episode_generation.get(sensor_id, 0) + 1
+        self._episode_generation[sensor_id] = generation
+        return generation
 
-        The short freshness window prevents a prior record's cached time from
-        being reused when a later record has no time field.
-        """
-        cached = self._mqtt_time_cache.get(sensor_id)
-        if cached and now - cached[1] <= timedelta(seconds=5):
-            return cached[0].isoformat(), False
-        return now.isoformat(), True
+    @callback
+    def _queue_notification_operation(
+        self, item: dict[str, Any], operation: str, generation: int
+    ) -> None:
+        """Queue notification side effects independently of MQTT state work."""
+        sensor_id = item["key"]
+        queue = self._notification_queues.setdefault(sensor_id, asyncio.Queue())
+        queue.put_nowait((operation, generation))
+        worker = self._notification_workers.get(sensor_id)
+        if worker is None or worker.done():
+            self._notification_workers[sensor_id] = self.hass.async_create_task(
+                self._async_process_notification_queue(sensor_id)
+            )
 
-    def _mark_timestamp_pending(self, sensor_id: str, keys: set[str], now: datetime) -> None:
-        """Allow a time field arriving just after its data field to correct it."""
-        pending = self._pending_timestamp_updates.get(sensor_id)
-        if pending and now - pending[1] <= timedelta(seconds=5):
-            pending[0].update(keys)
-            self._pending_timestamp_updates[sensor_id] = (pending[0], now)
-        else:
-            self._pending_timestamp_updates[sensor_id] = (set(keys), now)
+    async def _async_process_notification_queue(self, sensor_id: str) -> None:
+        """Run notification operations serially and discard stale operations."""
+        queue = self._notification_queues[sensor_id]
+        try:
+            while not queue.empty():
+                operation, generation = queue.get_nowait()
+                try:
+                    item = self.sensor_config(sensor_id)
+                    if item is None or generation != self._episode_generation.get(sensor_id, 0):
+                        continue
+                    data = self.sensor_state(sensor_id)
+
+                    if operation in {"start", "restore", "reminder"}:
+                        if not data.get("active") or data.get("acknowledged"):
+                            continue
+                        if operation == "start":
+                            await self._async_send_email(item, recovery=False)
+                        if (
+                            generation != self._episode_generation.get(sensor_id, 0)
+                            or not data.get("active") or data.get("acknowledged")
+                        ):
+                            continue
+                        await self._async_show_alert(item, generation)
+                        if operation == "reminder" and (
+                            generation == self._episode_generation.get(sensor_id, 0)
+                            and data.get("active") and not data.get("acknowledged")
+                        ):
+                            await self._async_send_email(item, recovery=False)
+
+                    elif operation == "clear":
+                        if data.get("active"):
+                            continue
+                        await self._async_clear_notifications(item)
+                        if (
+                            generation == self._episode_generation.get(sensor_id, 0)
+                            and not data.get("active")
+                        ):
+                            await self._async_send_email(item, recovery=True)
+
+                    elif operation == "restore_clear":
+                        if not data.get("active"):
+                            await self._async_clear_notifications(item)
+
+                    elif operation == "ack_clear":
+                        if data.get("acknowledged"):
+                            await self._async_clear_notifications(item)
+
+                except Exception:
+                    _LOGGER.exception(
+                        "Error processing %s notification operation for sensor %s",
+                        operation, sensor_id,
+                    )
+                finally:
+                    queue.task_done()
+        finally:
+            self._notification_workers.pop(sensor_id, None)
+            if not self._shutting_down and not queue.empty():
+                self._notification_workers[sensor_id] = self.hass.async_create_task(
+                    self._async_process_notification_queue(sensor_id)
+                )
 
     async def _async_process_sensor_field(
-        self, sensor_id: str, field: str, payload: str
+        self,
+        sensor_id: str,
+        field: str,
+        payload: str,
+        retained: bool = False,
+        received_at: str | None = None,
     ) -> None:
-        """Process every MQTT field, including retained events.
+        """Process MQTT telemetry; only detect_wet is accepted when retained.
 
-        detect_wet remains authoritative for current Wet/Dry state. Event
-        messages update history only and never independently change leak state.
-        MQTT retain flags are deliberately not used to filter event history.
+        All timestamps use HA's receipt time. The MQTT time field is ignored.
         """
+        if retained and field != "detect_wet":
+            return
+
         item = self.sensor_config(sensor_id)
         if item is None:
             return
         data = self.sensor_state(sensor_id)
         value = str(payload).strip()
-        now = dt_util.utcnow()
-
-        if field == "time":
-            parsed_time = self._parse_mqtt_time(value)
-            if parsed_time is None:
-                return
-            self._mqtt_time_cache[sensor_id] = (parsed_time, now)
-            pending = self._pending_timestamp_updates.pop(sensor_id, None)
-            if pending and now - pending[1] <= timedelta(seconds=5):
-                stamp = parsed_time.isoformat()
-                for key in pending[0]:
-                    data[key] = stamp
-                self._signal_update(sensor_id)
-                await self._async_save()
-            return
+        now = received_at or dt_util.utcnow().isoformat()
 
         if field == "detect_wet":
             if value in {"1", "true", "True"}:
-                stamp, needs_correction = self._event_timestamp(sensor_id, now)
-                await self._async_leak_started(item, stamp)
-                if needs_correction:
-                    self._mark_timestamp_pending(sensor_id, {"last_wet"}, now)
+                if retained:
+                    await self._async_restore_wet(item)
+                else:
+                    await self._async_leak_started(item, now)
             elif value in {"0", "false", "False"}:
-                await self._async_leak_cleared(item)
+                if retained:
+                    await self._async_restore_dry(item)
+                else:
+                    await self._async_leak_cleared(item)
             return
 
         if field == "event":
-            # Reset-to-Dry writes its own event timestamp to persistent state
-            # before publishing. Preserve that timestamp when the broker echoes
-            # or replays the retained HA-originated event.
-            if value.casefold() == "ha button press" and data.get("last_event") == value and data.get("last_event_time"):
+            # Reset-to-Dry records its own event time before publishing.
+            if (
+                value.casefold() == "ha button press"
+                and data.get("last_event") == value
+                and data.get("last_event_time")
+            ):
                 return
-            stamp, needs_correction = self._event_timestamp(sensor_id, now)
             data["last_event"] = value
-            data["last_event_time"] = stamp
-            pending_keys = {"last_event_time"}
+            data["last_event_time"] = now
             if value.casefold() == "battery report":
-                data["last_battery_report"] = stamp
-                pending_keys.add("last_battery_report")
-            if needs_correction:
-                self._mark_timestamp_pending(sensor_id, pending_keys, now)
+                data["last_battery_report"] = now
             self._signal_update(sensor_id)
             await self._async_save()
 
@@ -419,7 +489,11 @@ class WaterLeakCoordinator:
             # acknowledgment switch. Dismissing a notification without using
             # its Acknowledge action does not change this state.
             if desired:
-                await self._async_clear_notifications(self.sensor_config(sensor_id))
+                self._queue_notification_operation(
+                    self.sensor_config(sensor_id),
+                    "ack_clear",
+                    self._episode_generation.get(sensor_id, 0),
+                )
 
     async def async_acknowledge(self, sensor_id: str) -> None:
         """Acknowledge the current leak episode (mobile notification action)."""
@@ -474,64 +548,70 @@ class WaterLeakCoordinator:
         await self._async_send_mobile(item, title, message)
 
     async def _async_restore_wet(self, item: dict[str, Any]) -> None:
-        """Restore a sensor that is already wet when discovered or restarted."""
-        data = self.sensor_state(item["key"])
+        """Restore retained/current wet state without treating it as a new event."""
+        sensor_id = item["key"]
+        data = self.sensor_state(sensor_id)
         if data.get("active"):
             return
-        now = dt_util.utcnow().isoformat()
+        generation = self._next_episode_generation(sensor_id)
         data.update({
             "active": True,
             "acknowledged": False,
-            "last_wet": data.get("last_wet") or now,
-            # This is a newly observed wet episode; the actual start may have
-            # occurred while HA was offline, so use the discovery time.
-            "leak_started": now,
         })
-        self._signal_update(item["key"])
-        await self._async_show_alert(item)
+        self._signal_update(sensor_id)
         await self._async_save()
+        self._queue_notification_operation(item, "restore", generation)
+
+    async def _async_restore_dry(self, item: dict[str, Any]) -> None:
+        """Restore retained dry state without generating a recovery email."""
+        sensor_id = item["key"]
+        data = self.sensor_state(sensor_id)
+        if not data.get("active"):
+            return
+        generation = self._next_episode_generation(sensor_id)
+        data["active"] = False
+        data["acknowledged"] = False
+        self._signal_update(sensor_id)
+        await self._async_save()
+        self._queue_notification_operation(item, "restore_clear", generation)
 
     async def _async_leak_started(self, item: dict[str, Any], event_time: str | None = None) -> None:
-        """Record every wet report but start/alert only once per episode."""
-        data = self.sensor_state(item["key"])
+        """Record every live wet report; alert only on a dry-to-wet transition."""
+        sensor_id = item["key"]
+        data = self.sensor_state(sensor_id)
         now = event_time or dt_util.utcnow().isoformat()
         data["last_wet"] = now
         if data.get("active"):
-            self._signal_update(item["key"])
+            self._signal_update(sensor_id)
             await self._async_save()
             return
-        data.update({
-            "active": True,
-            "acknowledged": False,
-            "leak_started": now,
-        })
-        self._signal_update(item["key"])
-        await self._async_send_email(item, recovery=False)
-        await self._async_show_alert(item)
+        generation = self._next_episode_generation(sensor_id)
+        data.update({"active": True, "acknowledged": False, "leak_started": now})
+        self._signal_update(sensor_id)
         await self._async_save()
+        self._queue_notification_operation(item, "start", generation)
 
     async def _async_leak_cleared(self, item: dict[str, Any]) -> None:
-        """End the current leak episode only after detect_wet reports dry."""
-        data = self.sensor_state(item["key"])
+        """End the leak episode promptly and queue clear/recovery side effects."""
+        sensor_id = item["key"]
+        data = self.sensor_state(sensor_id)
         if not data.get("active"):
             return
+        generation = self._next_episode_generation(sensor_id)
         data["active"] = False
         data["acknowledged"] = False
-        self._signal_update(item["key"])
-        await self._async_clear_notifications(item)
-        await self._async_send_email(item, recovery=True)
+        self._signal_update(sensor_id)
         await self._async_save()
+        self._queue_notification_operation(item, "clear", generation)
 
     async def _async_reminder_tick(self, now: datetime) -> None:
-        """Send reminders only while an unacknowledged leak episode is active."""
+        """Queue reminders only for currently active, unacknowledged leaks."""
         for item in self.sensors:
             data = self.sensor_state(item["key"])
             if data.get("active") and not data.get("acknowledged"):
-                # Re-create/update both alert surfaces on every reminder. This
-                # refreshes the last-detected timestamp and restores a mobile
-                # notification that was dismissed without acknowledging it.
-                await self._async_show_alert(item)
-                await self._async_send_email(item, recovery=False)
+                self._queue_notification_operation(
+                    item, "reminder", self._episode_generation.get(item["key"], 0)
+                )
 
     @callback
     def _async_mobile_action(self, event) -> None:
@@ -626,15 +706,36 @@ class WaterLeakCoordinator:
         )
         return title, message, area
 
-    async def _async_show_alert(self, item: dict[str, Any]) -> None:
+    async def _async_show_alert(
+        self, item: dict[str, Any], generation: int | None = None
+    ) -> None:
+        """Show an alert only while its originating leak episode is current."""
+        sensor_id = item["key"]
+        data = self.sensor_state(sensor_id)
+
+        def still_current() -> bool:
+            return (
+                generation is None
+                or (
+                    generation == self._episode_generation.get(sensor_id, 0)
+                    and data.get("active")
+                    and not data.get("acknowledged")
+                )
+            )
+
+        if not still_current():
+            return
         title, message, _ = self._notification_text(item)
         await self.hass.services.async_call("persistent_notification", "create", {
             "notification_id": self._notification_id(item),
             "title": title,
             "message": message,
         }, blocking=True)
+        if not still_current():
+            return
         await self._async_record_notification(item)
-        await self._async_send_mobile(item, title, message)
+        if still_current():
+            await self._async_send_mobile(item, title, message)
 
     async def _async_clear_notifications(self, item: dict[str, Any]) -> None:
         await self.hass.services.async_call("persistent_notification", "dismiss", {

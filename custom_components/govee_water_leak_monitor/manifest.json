@@ -6,14 +6,14 @@
   ],
   "config_flow": true,
   "iot_class": "local_push",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "requirements": [],
   "dependencies": [
     "mqtt",
     "http"
   ],
-  "documentation": "https://github.com/ctfo1/govee-water-leak-monitor",
-  "issue_tracker": "https://github.com/ctfo1/govee-water-leak-monitor/issues",
+  "documentation": "https://github.com/ctfo1/govee-water-leak-monitor-hacs",
+  "issue_tracker": "https://github.com/ctfo1/govee-water-leak-monitor-hacs/issues",
   "after_dependencies": [
     "lovelace"
   ]

@@ -8,14 +8,15 @@ Home Assistant custom integration for Govee Water sensors decoded by [rtl_433](h
 - Adds monitor entities to the existing rtl_433 MQTT device; it does not create a separate device.
 - Uses the existing rtl_433 moisture binary sensor / `detect_wet` MQTT state as the authoritative wet/dry condition.
 - Sends notifications when a new continuous leak episode starts and supports reminders and acknowledgment.
-- Repeated `detect_wet=1` packets update Last Wet Event without generating duplicate initial alerts.
+- Repeated live `detect_wet=1` packets update Last Wet Event without generating duplicate initial alerts.
+- Retained MQTT messages are ignored except `detect_wet`, which restores the current Wet/Dry state.
 - Provides a Leak Acknowledged switch and Reset to Dry button.
 - Reset to Dry publishes retained `detect_wet=0` and retained `event=HA Button Press` to the sensor's actual rtl_433 MQTT topics.
 - Exposes Last Wet Event, Last Leak Started, Last Battery Report, Last Notification, and Last Event as integration entities.
 - Does not duplicate battery percentage, battery voltage, or signal diagnostics already supplied by rtl_433.
 - Reads the existing MQTT device's current name and assigned area for notifications.
 - If the MQTT device is deleted, monitor entities become unavailable. Rediscovery reattaches them without losing monitor state or settings.
-- Includes a standalone Lovelace card with automatic discovery of related monitor entities and battery level.
+- Includes a standalone Lovelace card with automatic discovery of related monitor entities and battery level; sensor names link to their Home Assistant device pages.
 
 ## Requirements
 
@@ -44,7 +45,7 @@ Home Assistant custom integration for Govee Water sensors decoded by [rtl_433](h
 The integration includes a standalone Lovelace card (no Mushroom, stack-in-card, card-mod, or other custom-card dependencies). In the default storage-mode dashboard configuration, the integration serves and registers the card automatically. If Lovelace is configured in YAML mode, add this resource manually:
 
 ```yaml
-url: /govee_water_leak_monitor/govee-water-leak-card.js?v=0.3.12
+url: /govee_water_leak_monitor/govee-water-leak-card.js?v=0.3.13
 type: module
 ```
 
@@ -62,11 +63,11 @@ The card displays the existing rtl_433 device name (without the moisture entity'
 |---|---|
 | Existing rtl_433 Water Sensor | Authoritative wet/dry state |
 | Leak Acknowledged | Toggle acknowledgment for the current active leak |
-| Last Wet Event | Timestamp of the most recent `detect_wet=1` report |
+| Last Wet Event | Timestamp of the most recent live `detect_wet=1` report; retained state restoration does not change it |
 | Last Leak Started | Timestamp when the most recent continuous leak episode began; retained after dry and replaced when a new leak episode starts |
-| Last Battery Report | Timestamp of the `event=Battery Report` message, using rtl_433's `time` field when available |
+| Last Battery Report | Timestamp of the most recent live `event=Battery Report` message, using Home Assistant message-receipt time |
 | Last Notification | Timestamp of the most recent successfully sent notification |
-| Last Event | Most recent event label; retained events are processed and timestamped from rtl_433's `time` field when available |
+| Last Event | Most recent live event label, timestamped using Home Assistant message-receipt time; retained events are ignored |
 | Reset to Dry | Publishes retained `detect_wet=0` and `event=HA Button Press` |
 | Test Notification | Sends a test notification without changing leak state |
 

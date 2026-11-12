@@ -1,3 +1,12 @@
+## 0.3.13
+
+- Process retained MQTT messages only for `detect_wet`; ignore retained events, timestamps, battery fields, and all other telemetry.
+- Use Home Assistant MQTT message-receipt time for live event timestamps; remove rtl_433 time parsing and the five-second timestamp cache.
+- Serialize MQTT field processing per sensor to preserve message arrival order.
+- Separate state transitions from notification side effects and discard stale notification work after subsequent Wet/Dry transitions.
+- Link each Lovelace sensor heading to its associated Home Assistant device page.
+- Correct the manifest documentation and issue-tracker URLs for the HACS repository.
+
 ## 0.3.12
 
 - Display the existing rtl_433 device name in the Lovelace card instead of appending the moisture entity label "Water Sensor".

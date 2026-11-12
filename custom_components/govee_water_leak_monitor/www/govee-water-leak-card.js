@@ -135,6 +135,10 @@ class GoveeWaterLeakCard extends HTMLElement {
     const wet = state.state === "on";
     const available = !["unavailable", "unknown"].includes(state.state);
     const title = this._deviceTitle(sourceId);
+    const deviceId = this._hass.entities?.[sourceId]?.device_id;
+    const deviceLink = deviceId
+      ? `<a class="device-link" href="/config/devices/device/${this._escape(encodeURIComponent(deviceId))}" data-device-id="${this._escape(deviceId)}">${this._escape(title)}</a>`
+      : this._escape(title);
     const ack = this._entityFor(sourceId, "acknowledged", ["leak acknowledged", "acknowledged"], "switch");
     const reset = this._entityFor(sourceId, "reset_button", ["reset to dry"], "button");
     const lastWet = this._entityFor(sourceId, "last_wet_event", ["last wet event"], "sensor");
@@ -147,7 +151,7 @@ class GoveeWaterLeakCard extends HTMLElement {
         <div class="top">
           <div class="symbol ${wet ? "wet" : "dry"}"><ha-icon icon="${wet ? "mdi:water" : "mdi:water-off"}"></ha-icon></div>
           <div class="heading">
-            <div class="name">${this._escape(title)}</div>
+            <div class="name">${deviceLink}</div>
             <div class="status-line">
               <span class="status ${wet ? "wet-text" : ""}">${status}</span>
               ${showWetTime ? `<span class="wet-time">Water last detected ${this._escape(wetTime)}</span>` : ""}
@@ -171,7 +175,7 @@ class GoveeWaterLeakCard extends HTMLElement {
         .monitor-card:last-child{margin-bottom:0}.top{display:flex;align-items:center;gap:11px}
         .symbol{width:30px;height:30px;flex:0 0 30px;display:grid;place-items:center;background:transparent}
         .symbol ha-icon{--mdc-icon-size:27px}.symbol.wet{color:var(--error-color)}.symbol.dry{color:var(--secondary-text-color)}
-        .heading{min-width:0;flex:1}.name{font-size:14px;line-height:1.25;font-weight:600;overflow-wrap:anywhere;color:var(--primary-text-color)}
+        .heading{min-width:0;flex:1}.name{font-size:14px;line-height:1.25;font-weight:600;overflow-wrap:anywhere;color:var(--primary-text-color)}.device-link{color:inherit;text-decoration:none}.device-link:hover{text-decoration:underline}.device-link:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px;border-radius:2px}
         .status-line{display:flex;align-items:baseline;flex-wrap:wrap;margin-top:2px;line-height:1.25;font-size:14px}
         .status{font-size:14px;line-height:1.25;color:var(--secondary-text-color)}.wet-text{color:var(--error-color)}
         .wet-time{font-size:14px;line-height:1.25;color:var(--secondary-text-color);margin-left:6px}.wet-time:before{content:"-";margin-right:6px}
@@ -185,6 +189,16 @@ class GoveeWaterLeakCard extends HTMLElement {
     this.shadowRoot.innerHTML = style + (monitors.length
       ? monitors.map((id) => this._cardMarkup(id)).join("")
       : `<div class="empty">No Govee leak monitors are currently discovered.</div>`);
+
+    this.shadowRoot.querySelectorAll("a[data-device-id]").forEach((link) => {
+      link.addEventListener("click", (event) => {
+        const deviceId = link.dataset.deviceId;
+        if (deviceId && typeof this._hass?.navigate === "function") {
+          event.preventDefault();
+          this._hass.navigate(`/config/devices/device/${encodeURIComponent(deviceId)}`);
+        }
+      });
+    });
 
     this.shadowRoot.querySelectorAll("[data-action]").forEach((button) => {
       button.addEventListener("click", async () => {
